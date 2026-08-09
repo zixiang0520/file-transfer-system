@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>管理后台 - 文件流转系统</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+</head>
+<body class="bg-zinc-950 text-white min-h-screen">
+  <div class="max-w-5xl mx-auto p-6">
+    <div class="flex items-center justify-between mb-6">
+      <h1 class="text-2xl font-bold">管理后台</h1>
+      <a href="/" class="text-sm text-zinc-400 hover:text-white">← 返回前台</a>
+    </div>
+
+    <!-- Login -->
+    <div id="loginBox" class="bg-zinc-900 rounded-3xl p-6 max-w-md">
+      <h2 class="font-medium mb-4">管理员登录</h2>
+      <input id="u" class="w-full mb-3 bg-zinc-800 rounded-xl px-4 py-3" placeholder="用户名" value="admin" />
+      <input id="p" type="password" class="w-full mb-4 bg-zinc-800 rounded-xl px-4 py-3" placeholder="密码" />
+      <button onclick="login()" class="w-full py-3 bg-violet-600 hover:bg-violet-500 rounded-xl">登录</button>
+      <p id="loginErr" class="text-red-400 text-sm mt-3 hidden"></p>
+    </div>
+
+    <div id="dash" class="hidden space-y-6">
+      <div class="flex gap-3 flex-wrap">
+        <button onclick="loadPackages()" class="px-4 py-2 bg-zinc-800 rounded-xl text-sm">刷新包裹</button>
+        <button onclick="cleanup()" class="px-4 py-2 bg-zinc-800 rounded-xl text-sm">清理过期</button>
+        <button onclick="logout()" class="px-4 py-2 bg-red-900/40 rounded-xl text-sm">退出</button>
+      </div>
+
+      <!-- Packages -->
+      <div class="bg-zinc-900 rounded-3xl p-6">
+        <h2 class="font-medium mb-4">提取码 / 包裹管理</h2>
+        <div id="pkgList" class="space-y-3 text-sm"></div>
+      </div>
+
+      <!-- Settings -->
+      <div class="bg-zinc-900 rounded-3xl p-6 space-y-4">
+        <h2 class="font-medium">上传与存储设置</h2>
+        <div class="grid md:grid-cols-2 gap-4">
+          <label class="text-sm">单文件上限 (MB)
+            <input id="maxSize" type="number" class="mt-1 w-full bg-zinc-800 rounded-xl px-3 py-2" />
+          </label>
+          <label class="text-sm">单次最多文件数
+            <input id="maxFiles" type="number" class="mt-1 w-full bg-zinc-800 rounded-xl px-3 py-2" />
+          </label>
+          <label class="text-sm">默认有效期 (小时)
+            <input id="defExp" type="number" class="mt-1 w-full bg-zinc-800 rounded-xl px-3 py-2" />
+          </label>
+          <label class="text-sm">最长有效期 (天)
+            <input id="maxExpDays" type="number" min="1" max="3650" class="mt-1 w-full bg-zinc-800 rounded-xl px-3 py-2" />
+            <span class="text-xs text-zinc-500">前台用户设置的有效期不可超过此值</span>
+          </label>
+          <label class="text-sm">公网地址 (用于提取链接)
+            <input id="publicUrl" class="mt-1 w-full bg-zinc-800 rounded-xl px-3 py-2" placeholder="http://36.140.147.210:8790" />
+          </label>
+          <label class="text-sm md:col-span-2">允许扩展名 (逗号分隔)
+            <input id="exts" class="mt-1 w-full bg-zinc-800 rounded-xl px-3 py-2" />
+          </label>
+        </div>
+
+        <h3 class="font-medium pt-2">移动云盘绑定</h3>
+        <p class="text-xs text-zinc-500">参考 OpenList/139meida：登录 yun.139.com → 开发者工具找 hcy/file/list → 复制 Authorization 中 Basic 后面的内容</p>
+        <div class="grid md:grid-cols-2 gap-4">
+          <label class="text-sm flex items-center gap-2">启用云盘
+            <input id="yEnabled" type="checkbox" class="ml-2" />
+          </label>
+          <label class="text-sm">存储后端
+            <select id="backend" class="mt-1 w-full bg-zinc-800 rounded-xl px-3 py-2">
+              <option value="yun139" selected>移动云盘</option>
+              <option value="local">本地（兼容旧数据）</option>
+            </select>
+          </label>
+          <label class="text-sm md:col-span-2">Authorization (Basic 后内容)
+            <input id="yAuth" class="mt-1 w-full bg-zinc-800 rounded-xl px-3 py-2" placeholder="留空则不修改" />
+          </label>
+          <label class="text-sm">根文件夹 ID
+            <input id="yRoot" class="mt-1 w-full bg-zinc-800 rounded-xl px-3 py-2" value="/" />
+          </label>
+          <div class="flex items-end gap-2">
+            <button onclick="test139()" class="px-4 py-2 bg-zinc-800 rounded-xl text-sm">测试连接</button>
+            <span id="yTest" class="text-xs text-zinc-400"></span>
+          </div>
+        </div>
+
+        <h3 class="font-medium pt-4">管理员账号</h3>
+        <p class="text-xs text-zinc-500">修改用户名/密码后立即生效；密码留空表示不修改。</p>
+        <div class="grid md:grid-cols-2 gap-4">
+          <label class="text-sm">管理员用户名
+            <input id="adminUser" class="mt-1 w-full bg-zinc-800 rounded-xl px-3 py-2" />
+          </label>
+          <div></div>
+          <label class="text-sm">新密码
+            <input id="adminNewPw" type="password" class="mt-1 w-full bg-zinc-800 rounded-xl px-3 py-2" placeholder="留空不改" autocomplete="new-password" />
+          </label>
+          <label class="text-sm">确认新密码
+            <input id="adminNewPw2" type="password" class="mt-1 w-full bg-zinc-800 rounded-xl px-3 py-2" placeholder="再输入一次" autocomplete="new-password" />
+          </label>
+        </div>
+
+        <button onclick="saveCfg()" class="px-6 py-3 bg-violet-600 hover:bg-violet-500 rounded-xl">保存设置</button>
+        <p id="saveMsg" class="text-sm text-emerald-400 hidden">已保存</p>
+        <p id="saveErr" class="text-sm text-red-400 hidden"></p>
+      </div>
+    </div>
+  </div>
+  <script>
+    function fmtSize(n){n=Number(n)||0;if(n<1024)return n+'B';if(n<1048576)return (n/1024).toFixed(1)+'KB';return (n/1048576).toFixed(1)+'MB';}
+    function fmtTime(ts){try{return new Date(ts*1000).toLocaleString()}catch(e){return '-'}}
+    async function login(){
+      const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({username:document.getElementById('u').value,password:document.getElementById('p').value})});
+      if(!r.ok){document.getElementById('loginErr').textContent='登录失败';document.getElementById('loginErr').classList.remove('hidden');return;}
+      document.getElementById('loginBox').classList.add('hidden');
+      document.getElementById('dash').classList.remove('hidden');
+      await loadCfg(); await loadPackages();
+    }
+    async function logout(){await fetch('/api/logout',{method:'POST'}); location.reload();}
+    async function loadCfg(){
+      const r=await fetch('/api/config'); if(!r.ok) return;
+      const c=await r.json();
+      document.getElementById('maxSize').value=c.upload?.max_file_size_mb||500;
+      document.getElementById('maxFiles').value=c.upload?.max_files_per_package||50;
+      document.getElementById('defExp').value=c.upload?.default_expire_hours||72;
+      document.getElementById('maxExpDays').value=c.upload?.max_expire_days||90;
+      document.getElementById('publicUrl').value=c.site?.public_base_url||'';
+      document.getElementById('exts').value=(c.upload?.allowed_extensions||[]).join(',');
+      document.getElementById('backend').value=c.storage?.backend||'yun139';
+      document.getElementById('yEnabled').checked=!!c.storage?.yun139?.enabled;
+      document.getElementById('yAuth').value=''; // never echo secret; leave blank = keep
+      document.getElementById('yRoot').value=c.storage?.yun139?.root_folder_id||'/';
+      document.getElementById('adminUser').value=c.admin?.username||'admin';
+      document.getElementById('adminNewPw').value='';
+      document.getElementById('adminNewPw2').value='';
+    }
+    async function saveCfg(){
+      const errEl=document.getElementById('saveErr');
+      const okEl=document.getElementById('saveMsg');
+      errEl.classList.add('hidden');
+      okEl.classList.add('hidden');
+
+      const newPw=document.getElementById('adminNewPw').value;
+      const newPw2=document.getElementById('adminNewPw2').value;
+      if(newPw || newPw2){
+        if(newPw !== newPw2){
+          errEl.textContent='两次输入的新密码不一致';
+          errEl.classList.remove('hidden');
+          return;
+        }
+        if(newPw.length < 6){
+          errEl.textContent='新密码至少 6 位';
+          errEl.classList.remove('hidden');
+          return;
+        }
+      }
+      const adminUser=(document.getElementById('adminUser').value||'').trim();
+      if(!adminUser){
+        errEl.textContent='管理员用户名不能为空';
+        errEl.classList.remove('hidden');
+        return;
+      }
+
+      const body={
+        site:{public_base_url:document.getElementById('publicUrl').value},
+        upload:{
+          max_file_size_mb:Number(document.getElementById('maxSize').value),
+          max_files_per_package:Number(document.getElementById('maxFiles').value),
+          default_expire_hours:Number(document.getElementById('defExp').value),
+          max_expire_days:Number(document.getElementById('maxExpDays').value),
+          allowed_extensions:document.getElementById('exts').value.split(',').map(s=>s.trim()).filter(Boolean),
+        },
+        storage:{
+          backend:document.getElementById('backend').value,
+          yun139:{
+            enabled:document.getElementById('yEnabled').checked,
+            authorization:document.getElementById('yAuth').value,
+            root_folder_id:document.getElementById('yRoot').value,
+          }
+        },
+        admin:{
+          username: adminUser,
+        }
+      };
+      if(newPw) body.new_password = newPw;
+
+      const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      const d=await r.json().catch(()=>({}));
+      if(r.ok){
+        okEl.textContent = newPw ? '已保存（密码已更新）' : '已保存';
+        okEl.classList.remove('hidden');
+        setTimeout(()=>okEl.classList.add('hidden'),2000);
+        await loadCfg();
+      } else {
+        errEl.textContent = d.detail || d.error || '保存失败';
+        errEl.classList.remove('hidden');
+      }
+    }
+    async function loadPackages(){
+      const r=await fetch('/api/packages'); if(!r.ok) return;
+      const data=await r.json();
+      const box=document.getElementById('pkgList'); box.innerHTML='';
+      (data.items||[]).forEach(p=>{
+        const div=document.createElement('div');
+        div.className='flex flex-wrap items-center justify-between gap-3 bg-zinc-800/70 rounded-2xl px-4 py-3';
+        div.innerHTML=`
+          <div>
+            <div class="font-mono text-lg tracking-widest">${p.extract_code}</div>
+            <div class="text-xs text-zinc-400">${p.file_count||0} 文件 · ${fmtSize(p.total_size)} · 过期 ${fmtTime(p.expire_at)} · 下载 ${p.download_count||0}${p.max_extracts?(' / 限'+p.max_extracts):''}</div>
+          </div>
+          <div class="flex gap-2">
+            <a class="px-3 py-1.5 bg-zinc-700 rounded-lg" href="/extract?code=${p.extract_code}" target="_blank">查看</a>
+            <button class="px-3 py-1.5 bg-red-900/50 rounded-lg" onclick="delPkg(${p.id})">删除</button>
+          </div>`;
+        box.appendChild(div);
+      });
+      if(!(data.items||[]).length) box.innerHTML='<div class="text-zinc-500">暂无包裹</div>';
+    }
+    async function delPkg(id){
+      if(!confirm('确定删除该提取码及文件？')) return;
+      await fetch('/api/packages/'+id,{method:'DELETE'});
+      loadPackages();
+    }
+    async function cleanup(){
+      const r=await fetch('/api/cleanup',{method:'POST'});
+      const d=await r.json();
+      alert('已清理 '+ (d.cleaned||0) +' 个过期包裹');
+      loadPackages();
+    }
+    async function test139(){
+      const r=await fetch('/api/yun139/test',{method:'POST'});
+      const d=await r.json();
+      document.getElementById('yTest').textContent = d.ok ? '连接正常' : ('失败: '+(d.error||JSON.stringify(d)));
+    }
+    // auto try session
+    fetch('/api/config').then(r=>{
+      if(r.ok){document.getElementById('loginBox').classList.add('hidden');document.getElementById('dash').classList.remove('hidden');loadCfg();loadPackages();}
+    });
+  </script>
+</body>
+</html>
