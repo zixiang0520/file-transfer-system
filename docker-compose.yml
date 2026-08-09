@@ -1,0 +1,34 @@
+services:
+  file-transfer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: file-transfer-system:latest
+    container_name: file-transfer-system
+    restart: unless-stopped
+    ports:
+      - "${FTS_PORT:-8790}:8790"
+    environment:
+      FTS_HOST: "0.0.0.0"
+      FTS_PORT: "8790"
+      TZ: Asia/Shanghai
+      # 可选：首次启动后仍建议在后台改密；仅作初始化提示
+      # PUBLIC_BASE_URL 可在后台 site.public_base_url 配置
+    volumes:
+      # 配置 + SQLite
+      - ./data:/app/data
+      # 本地上传文件（云盘直传完善前仍会用到）
+      - ./storage:/app/storage
+      - ./logs:/app/logs
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8790/health', timeout=3)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

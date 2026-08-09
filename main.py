@@ -444,11 +444,12 @@ def bot_package(code: str, request: Request, token: str = ""):
 
 def main():
     import argparse
+    import os
     import uvicorn
 
     p = argparse.ArgumentParser()
-    p.add_argument("--host", default="0.0.0.0")
-    p.add_argument("--port", type=int, default=8790)
+    p.add_argument("--host", default=os.environ.get("FTS_HOST", "0.0.0.0"))
+    p.add_argument("--port", type=int, default=int(os.environ.get("FTS_PORT", "8790")))
     args = p.parse_args()
     uvicorn.run("main:app", host=args.host, port=args.port, reload=False)
 
