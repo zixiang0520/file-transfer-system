@@ -150,8 +150,11 @@ docker images | grep file-transfer
 2. 不要把 `data/config.json` 提交 Git / 打进镜像
 3. 公网用 HTTPS 反代；防火墙只放行 80/443 或指定端口
 4. 按需收紧扩展名、单文件大小、最长有效期
-5. 移动云盘 Authorization 只填后台，勿写进 Dockerfile / compose 明文（可用运行后后台配置）
+5. 移动云盘鉴权只填后台，勿写进 Dockerfile / compose 明文：
+   - **长期推荐**：邮箱 Cookie（mail.10086.cn）+ 用户名 + 密码（对齐 OpenList，可自动续 Authorization）
+   - 或只填 Authorization（易过期）
 6. 根目录支持显示路径如 `/文件流转` —— 系统会自动解析/创建真实 parentFileId。
+7. 上传报 `认证失败(05050006)`：补 Cookie+账密后点「测试连接/自动续期」，或更新 Authorization。
 
 ## 10. 故障排查
 | 现象 | 处理 |
@@ -161,6 +164,7 @@ docker images | grep file-transfer
 | 重启丢文件/配置 | 未挂载 `data`/`storage` volume |
 | 权限错误 | 宿主机目录给 1000 用户写权限：`chown -R 1000:1000 data storage logs` |
 | 健康检查失败 | 等 `start_period`；确认 `/health` 可访问 |
+| 认证失败(05050006) | 后台配置 OpenList 长期绑定（Cookie+密码）或刷新 Authorization |
 
 ## 11. 镜像推送到仓库（可选）
 ```bash
