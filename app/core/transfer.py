@@ -1,10 +1,8 @@
-"""Transfer business logic: multi-file package + one extract code."""
+"""Transfer business logic: multi-file package + one extract code (cloud only)."""
 from __future__ import annotations
 
 import io
-import re
 import secrets
-import string
 import time
 import zipfile
 from pathlib import Path
@@ -23,7 +21,6 @@ class TransferError(Exception):
 
 
 def _gen_code(length: int = 6) -> str:
-    # avoid ambiguous 0/O/1/I
     alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
     return "".join(secrets.choice(alphabet) for _ in range(length))
 
@@ -40,7 +37,6 @@ def validate_filename(name: str) -> Tuple[bool, str]:
     cfg = load_config()
     up = cfg.get("upload") or {}
     allowed = [x.lower().lstrip(".") for x in (up.get("allowed_extensions") or [])]
-    max_mb = float(up.get("max_file_size_mb") or 500)
     pure = Path(name).name
     if not pure or pure in (".", ".."):
         return False, "非法文件名"
@@ -57,7 +53,7 @@ def max_bytes() -> int:
 
 def create_package_with_files(
     *,
-    files: Sequence[Tuple[str, bytes, str]],  # (filename, content, content_type)
+    files: Sequence[Tuple[str, bytes, str]],
     expire_hours: Optional[float] = None,
     max_extracts: Optional[int] = None,
     title: str = "",
@@ -66,6 +62,11 @@ def create_package_with_files(
 ) -> Dict[str, Any]:
     cfg = load_config()
     up = cfg.get("upload") or {}
+    st = cfg.get("storage") or {}
+    y = st.get("yun139") or {}
+    if not y.get("enabled") or not (y.get("authorization") or "").strip():
+        raise TransferError("未配置移动云盘：请在后台启用并填写 Authorization", 503)
+
     max_n = int(up.get("max_files_per_package") or 50)
     if not files:
         raise TransferError("请至少上传一个文件")
@@ -90,7 +91,6 @@ def create_package_with_files(
     hours = float(hours)
     if hours <= 0:
         hours = float(up.get("default_expire_hours") or 72)
-    # 最长有效期：后台可配置（单位：天）
     max_days = float(up.get("max_expire_days") or 90)
     if max_days < 1:
         max_days = 1
@@ -101,7 +101,6 @@ def create_package_with_files(
         raise TransferError(f"有效期不能超过 {int(max_days) if max_days == int(max_days) else max_days} 天")
     hours = min(hours, max_hours)
 
-    # 0 = unlimited
     extracts = int(max_extracts) if max_extracts is not None else int(up.get("default_max_extracts") or 0)
     if extracts < 0:
         extracts = 0
@@ -121,28 +120,41 @@ def create_package_with_files(
     )
 
     saved = []
-    for pure, content, ctype in prepared:
-        bio = io.BytesIO(content)
-        meta = store.save_file(bio, pure)
-        fid = db.add_file(
-            package_id=pkg_id,
-            original_name=pure,
-            stored_name=meta["stored_name"],
-            size=int(meta["size"]),
-            content_type=ctype,
-            storage_backend=meta["backend"],
-            storage_path=meta["storage_path"],
-            remote_id=meta.get("remote_id") or "",
-            sha256=meta.get("sha256") or "",
-        )
-        saved.append(
-            {
-                "id": fid,
-                "name": pure,
-                "size": int(meta["size"]),
-                "content_type": ctype,
-            }
-        )
+    try:
+        for pure, content, ctype in prepared:
+            bio = io.BytesIO(content)
+            meta = store.save_file(bio, pure)
+            fid = db.add_file(
+                package_id=pkg_id,
+                original_name=pure,
+                stored_name=meta["stored_name"],
+                size=int(meta["size"]),
+                content_type=ctype,
+                storage_backend=meta["backend"],
+                storage_path=meta["storage_path"],
+                remote_id=meta.get("remote_id") or "",
+                sha256=meta.get("sha256") or "",
+            )
+            saved.append(
+                {
+                    "id": fid,
+                    "name": pure,
+                    "size": int(meta["size"]),
+                    "content_type": ctype,
+                }
+            )
+    except store.StorageError as e:
+        try:
+            purge_package(pkg_id)
+        except Exception:
+            pass
+        raise TransferError(e.message, getattr(e, "code", 502))
+    except Exception as e:
+        try:
+            purge_package(pkg_id)
+        except Exception:
+            pass
+        raise TransferError(f"上传云盘失败: {e}", 502)
 
     return {
         "package_id": pkg_id,
@@ -164,24 +176,11 @@ def _assert_package_usable(pkg: Dict[str, Any]) -> None:
     max_e = int(pkg.get("max_extracts") or 0)
     used = int(pkg.get("download_count") or 0)
     if max_e > 0 and used >= max_e:
-        # already exhausted — destroy if still around
         try:
             purge_package(int(pkg["id"]))
         except Exception:
             pass
         raise TransferError("提取次数已用尽，文件已销毁", 410)
-
-
-def _after_extract(pkg_id: int, max_extracts: int, new_count: int) -> None:
-    """If limit reached after this extract/download, destroy package."""
-    if max_extracts > 0 and new_count >= max_extracts:
-        try:
-            purge_package(pkg_id)
-        except Exception:
-            try:
-                db.mark_expired(pkg_id)
-            except Exception:
-                pass
 
 
 def get_package_public(code: str) -> Dict[str, Any]:
@@ -214,35 +213,33 @@ def get_package_public(code: str) -> Dict[str, Any]:
     }
 
 
-def resolve_download(code: str, file_id: int) -> Tuple[Dict[str, Any], Path, bool]:
-    """Return (file_meta, path, should_destroy_after)."""
+def resolve_download(code: str, file_id: int) -> Tuple[Dict[str, Any], str, bool]:
+    """Return (file_meta, cloud_download_url, should_destroy_after)."""
     pkg = db.get_package_by_code(code)
     _assert_package_usable(pkg)
     assert pkg is not None
     f = db.get_file(file_id)
     if not f or int(f["package_id"]) != int(pkg["id"]):
         raise TransferError("文件不存在", 404)
-    path = store.open_local(f["storage_path"])
+    try:
+        url = store.get_download_url(f.get("storage_path") or "", f.get("remote_id") or "")
+    except store.StorageError as e:
+        raise TransferError(e.message, getattr(e, "code", 502))
     new_count = db.bump_download(int(pkg["id"]))
     max_e = int(pkg.get("max_extracts") or 0)
     should_destroy = max_e > 0 and new_count >= max_e
-    return f, path, should_destroy
+    return f, url, should_destroy
 
 
 def build_zip_for_package(code: str) -> Tuple[bytes, str, bool, int]:
-    """Return (zip_bytes, filename, should_destroy, package_id)."""
     pkg = db.get_package_by_code(code)
     _assert_package_usable(pkg)
     assert pkg is not None
-    info_code = pkg["extract_code"]
-    pkg_id = int(pkg["id"])
-    files = db.list_files(pkg_id)
+    files = db.list_files(int(pkg["id"]))
     return _zip_files(pkg, files)
 
 
-def build_zip_for_selected(
-    code: str, file_ids: Sequence[int]
-) -> Tuple[bytes, str, bool, int]:
+def build_zip_for_selected(code: str, file_ids: Sequence[int]) -> Tuple[bytes, str, bool, int]:
     pkg = db.get_package_by_code(code)
     _assert_package_usable(pkg)
     assert pkg is not None
@@ -258,18 +255,18 @@ def build_zip_for_selected(
     return _zip_files(pkg, files)
 
 
-def _zip_files(
-    pkg: Dict[str, Any], files: List[Dict[str, Any]]
-) -> Tuple[bytes, str, bool, int]:
+def _zip_files(pkg: Dict[str, Any], files: List[Dict[str, Any]]) -> Tuple[bytes, str, bool, int]:
     info_code = pkg["extract_code"]
     pkg_id = int(pkg["id"])
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         used_names: Dict[str, int] = {}
         for fmeta in files:
-            path = store.open_local(fmeta["storage_path"])
+            try:
+                data = store.open_file_bytes(fmeta.get("storage_path") or "", fmeta.get("remote_id") or "")
+            except store.StorageError as e:
+                raise TransferError(e.message, getattr(e, "code", 502))
             arc = Path(fmeta["original_name"]).name
-            # avoid duplicate names in zip
             if arc in used_names:
                 used_names[arc] += 1
                 stem = Path(arc).stem
@@ -277,7 +274,7 @@ def _zip_files(
                 arc = f"{stem}_{used_names[arc]}{suf}"
             else:
                 used_names[arc] = 0
-            zf.write(path, arcname=arc)
+            zf.writestr(arc, data)
     new_count = db.bump_download(pkg_id)
     max_e = int(pkg.get("max_extracts") or 0)
     should_destroy = max_e > 0 and new_count >= max_e
@@ -291,7 +288,11 @@ def _zip_files(
 def purge_package(package_id: int) -> None:
     result = db.delete_package(package_id) or {"files": []}
     for f in result.get("files") or []:
-        store.delete_file(f.get("storage_backend") or "local", f.get("storage_path") or "", f.get("remote_id") or "")
+        store.delete_file(
+            f.get("storage_backend") or "yun139",
+            f.get("storage_path") or "",
+            f.get("remote_id") or "",
+        )
 
 
 def cleanup_expired() -> int:

@@ -1,327 +1,290 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>文件流转系统</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600&display=swap');
-        body { font-family: 'Noto Sans SC', system-ui, sans-serif; }
-        .dropzone { transition: all 0.3s; }
-        .dropzone.dragover { background: #f3e8ff; border-color: #c026d3; }
-        .file-item { transition: all 0.2s; }
-        .file-item:hover { transform: translateX(4px); }
-    </style>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1" />
+  <meta name="theme-color" content="#09090b" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <title>文件流转系统</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&display=swap');
+    :root { color-scheme: dark; }
+    html { -webkit-text-size-adjust: 100%; }
+    body {
+      font-family: 'Noto Sans SC', system-ui, -apple-system, sans-serif;
+      padding-bottom: env(safe-area-inset-bottom, 0);
+      padding-left: env(safe-area-inset-left, 0);
+      padding-right: env(safe-area-inset-right, 0);
+    }
+    /* 防止 iOS 输入框聚焦放大 */
+    input, select, textarea, button { font-size: 16px; }
+    .dropzone { transition: border-color .2s, background .2s, transform .15s; }
+    .dropzone.dragover { background: rgba(139,92,246,.12); border-color: #a855f7; }
+    .file-item { transition: background .15s; }
+    .tap { -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+    .safe-pad { padding-left: max(1rem, env(safe-area-inset-left)); padding-right: max(1rem, env(safe-area-inset-right)); }
+    @media (max-width: 640px) {
+      .code-display { font-size: 1.75rem; letter-spacing: 0.2em; word-break: break-all; }
+    }
+  </style>
 </head>
-<body class="bg-zinc-950 text-white min-h-screen">
-    <div class="max-w-4xl mx-auto p-6">
-        <!-- Header -->
-        <div class="flex justify-between items-center mb-8">
-            <div>
-                <h1 class="text-4xl font-bold tracking-tight">文件流转</h1>
-                <p class="text-zinc-400">上传文件 → 获提取码 → 分享下载</p>
-            </div>
-            <div class="flex items-center gap-4 text-sm">
-                <a href="/extract" class="px-4 py-2 bg-zinc-900 hover:bg-zinc-800 rounded-xl flex items-center gap-2">
-                    <i class="fa-solid fa-list"></i>
-                    <span>提取文件</span>
-                </a>
-                <a href="/admin" class="px-4 py-2 bg-violet-600 hover:bg-violet-500 rounded-xl flex items-center gap-2">
-                    <i class="fa-solid fa-cog"></i>
-                    <span>管理后台</span>
-                </a>
-            </div>
+<body class="bg-zinc-950 text-white min-h-screen min-h-[100dvh]">
+  <div class="max-w-4xl mx-auto px-4 sm:px-6 py-4 sm:py-8 safe-pad">
+    <!-- Header：手机纵向堆叠 -->
+    <header class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between mb-6 sm:mb-8">
+      <div class="min-w-0">
+        <h1 class="text-2xl sm:text-4xl font-bold tracking-tight">文件流转</h1>
+        <p class="text-zinc-400 text-sm sm:text-base mt-1">上传文件 → 获提取码 → 分享下载</p>
+      </div>
+      <nav class="flex gap-2 w-full sm:w-auto">
+        <a href="/extract" class="tap flex-1 sm:flex-none justify-center px-3 sm:px-4 py-2.5 min-h-[44px] bg-zinc-900 hover:bg-zinc-800 active:bg-zinc-700 rounded-xl flex items-center gap-2 text-sm">
+          <i class="fa-solid fa-list"></i><span>提取</span>
+        </a>
+        <a href="/admin" class="tap flex-1 sm:flex-none justify-center px-3 sm:px-4 py-2.5 min-h-[44px] bg-violet-600 hover:bg-violet-500 active:bg-violet-400 rounded-xl flex items-center gap-2 text-sm">
+          <i class="fa-solid fa-cog"></i><span>后台</span>
+        </a>
+      </nav>
+    </header>
+
+    <!-- Upload Zone -->
+    <div id="uploadZone" class="dropzone border-2 border-dashed border-zinc-700 rounded-2xl sm:rounded-3xl p-8 sm:p-12 text-center cursor-pointer hover:border-violet-500 active:border-violet-400">
+      <div class="flex flex-col items-center gap-3 sm:gap-4">
+        <i class="fa-solid fa-cloud-arrow-up text-4xl sm:text-6xl text-violet-500"></i>
+        <div>
+          <p class="text-lg sm:text-2xl font-medium">拖拽文件到这里</p>
+          <p class="text-zinc-400 text-sm sm:text-base mt-1">或点击选择，支持多文件 · 手机可直接相册/文件</p>
         </div>
-
-        <!-- Upload Zone -->
-        <div id="uploadZone" class="dropzone border-2 border-dashed border-zinc-700 rounded-3xl p-12 text-center cursor-pointer hover:border-violet-500">
-            <div class="flex flex-col items-center gap-4">
-                <i class="fa-solid fa-cloud-arrow-up text-6xl text-violet-500"></i>
-                <div>
-                    <p class="text-2xl font-medium">拖拽文件到这里</p>
-                    <p class="text-zinc-400 mt-1">或点击选择文件，支持多文件</p>
-                </div>
-                <input type="file" id="fileInput" multiple class="hidden" onchange="handleFiles(this.files)">
-                <button onclick="document.getElementById('fileInput').click()" 
-                        class="px-8 py-3 bg-violet-600 hover:bg-violet-500 rounded-2xl font-medium">
-                    选择文件
-                </button>
-            </div>
-        </div>
-
-        <!-- File List -->
-        <div id="fileList" class="hidden mt-8">
-            <div class="flex justify-between items-center mb-4">
-                <h3 class="font-medium text-lg">已添加文件</h3>
-                <button onclick="clearAll()" 
-                        class="text-red-400 hover:text-red-500 text-sm flex items-center gap-1">
-                    <i class="fa-solid fa-trash"></i>
-                    清空
-                </button>
-            </div>
-            <div id="fileTable" class="space-y-3"></div>
-        </div>
-
-        <!-- Expire + extracts + Upload -->
-        <div id="uploadButton" class="hidden mt-6 space-y-4">
-            <div class="bg-zinc-900 rounded-3xl p-5">
-                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 items-end">
-                    <div>
-                        <label class="text-sm text-zinc-400 mb-2 block">有效期</label>
-                        <div class="flex gap-2">
-                            <input id="expireValue" type="number" min="1" max="999" value="3"
-                                   class="w-28 bg-zinc-800 border border-zinc-700 rounded-2xl px-4 py-3 outline-none focus:border-violet-500" />
-                            <select id="expireUnit"
-                                    class="bg-zinc-800 border border-zinc-700 rounded-2xl px-4 py-3 outline-none focus:border-violet-500">
-                                <option value="hour">小时</option>
-                                <option value="day" selected>天</option>
-                            </select>
-                        </div>
-                    </div>
-                    <div>
-                        <label class="text-sm text-zinc-400 mb-2 block">提取次数</label>
-                        <div class="flex gap-2 items-center">
-                            <input id="maxExtracts" type="number" min="0" max="100000" value="0"
-                                   class="w-28 bg-zinc-800 border border-zinc-700 rounded-2xl px-4 py-3 outline-none focus:border-violet-500" />
-                            <span class="text-xs text-zinc-500">次（0=不限）</span>
-                        </div>
-                    </div>
-                </div>
-                <p class="text-xs text-zinc-500 mt-4">
-                    到达提取次数后文件自动销毁；有效期最长 <span id="maxExpireHint">{{ max_expire_days | default(90) }}</span> 天。
-                </p>
-            </div>
-            <button onclick="uploadFiles()"
-                    class="w-full py-4 bg-gradient-to-r from-violet-600 to-fuchsia-500 rounded-3xl font-semibold text-lg flex items-center justify-center gap-3">
-                <i class="fa-solid fa-upload"></i>
-                立即上传 (生成提取码)
-            </button>
-        </div>
-
-        <!-- Result -->
-        <div id="resultPanel" class="hidden mt-8 bg-zinc-900 rounded-3xl p-8">
-            <div class="flex items-center justify-between mb-6">
-                <div>
-                    <div class="text-sm text-violet-400">提取码</div>
-                    <div id="extractCode" class="text-5xl font-mono font-bold tracking-[4px] text-white"></div>
-                </div>
-                <div onclick="copyCode()" class="cursor-pointer hover:text-violet-400">
-                    <i class="fa-solid fa-copy text-2xl"></i>
-                </div>
-            </div>
-
-            <div class="grid grid-cols-2 md:grid-cols-3 gap-8">
-                <div>
-                    <div class="text-sm text-zinc-400 mb-2">过期时间</div>
-                    <div id="expireTime" class="font-medium"></div>
-                </div>
-                <div>
-                    <div class="text-sm text-zinc-400 mb-2">文件数量</div>
-                    <div id="fileCount" class="font-medium"></div>
-                </div>
-                <div>
-                    <div class="text-sm text-zinc-400 mb-2">提取次数</div>
-                    <div id="extractLimit" class="font-medium"></div>
-                </div>
-            </div>
-
-            <button onclick="window.location.reload()" 
-                    class="mt-8 w-full py-3 text-sm border border-zinc-700 hover:border-zinc-400 rounded-2xl">
-                    继续上传新文件
-            </button>
-        </div>
+        <input type="file" id="fileInput" multiple class="hidden" onchange="handleFiles(this.files)" />
+        <button type="button" onclick="document.getElementById('fileInput').click()"
+                class="tap w-full sm:w-auto min-h-[48px] px-8 py-3 bg-violet-600 hover:bg-violet-500 active:bg-violet-400 rounded-2xl font-medium">
+          选择文件
+        </button>
+      </div>
     </div>
 
-    <script>
-        let selectedFiles = [];
+    <!-- File List -->
+    <div id="fileList" class="hidden mt-6 sm:mt-8">
+      <div class="flex justify-between items-center mb-3 sm:mb-4">
+        <h3 class="font-medium text-base sm:text-lg">已添加文件</h3>
+        <button type="button" onclick="clearAll()" class="tap text-red-400 active:text-red-300 text-sm min-h-[44px] px-2 flex items-center gap-1">
+          <i class="fa-solid fa-trash"></i> 清空
+        </button>
+      </div>
+      <div id="fileTable" class="space-y-2 sm:space-y-3"></div>
+    </div>
 
-        function handleFiles(files) {
-            for (let f of files) {
-                if (!selectedFiles.some(x => x.name === f.name)) {
-                    selectedFiles.push(f);
-                }
-            }
-            renderFileList();
-        }
+    <!-- Options + Upload -->
+    <div id="uploadButton" class="hidden mt-5 sm:mt-6 space-y-4">
+      <div class="bg-zinc-900 rounded-2xl sm:rounded-3xl p-4 sm:p-5">
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div>
+            <label class="text-sm text-zinc-400 mb-2 block">有效期</label>
+            <div class="flex gap-2">
+              <input id="expireValue" type="number" inputmode="numeric" min="1" max="999" value="3"
+                     class="w-24 sm:w-28 min-h-[48px] bg-zinc-800 border border-zinc-700 rounded-2xl px-3 sm:px-4 py-3 outline-none focus:border-violet-500" />
+              <select id="expireUnit"
+                      class="flex-1 min-h-[48px] bg-zinc-800 border border-zinc-700 rounded-2xl px-3 sm:px-4 py-3 outline-none focus:border-violet-500">
+                <option value="hour">小时</option>
+                <option value="day" selected>天</option>
+              </select>
+            </div>
+          </div>
+          <div>
+            <label class="text-sm text-zinc-400 mb-2 block">提取次数</label>
+            <div class="flex gap-2 items-center">
+              <input id="maxExtracts" type="number" inputmode="numeric" min="0" max="100000" value="0"
+                     class="w-24 sm:w-28 min-h-[48px] bg-zinc-800 border border-zinc-700 rounded-2xl px-3 sm:px-4 py-3 outline-none focus:border-violet-500" />
+              <span class="text-xs text-zinc-500 leading-snug">次<br class="sm:hidden" />（0=不限）</span>
+            </div>
+          </div>
+        </div>
+        <p class="text-xs text-zinc-500 mt-3 sm:mt-4 leading-relaxed">
+          到达提取次数后文件自动销毁；有效期最长 <span id="maxExpireHint">{{ max_expire_days | default(90) }}</span> 天。
+        </p>
+      </div>
+      <button type="button" id="btnUpload" onclick="uploadFiles()"
+              class="tap w-full min-h-[52px] py-3.5 sm:py-4 bg-gradient-to-r from-violet-600 to-fuchsia-500 rounded-2xl sm:rounded-3xl font-semibold text-base sm:text-lg flex items-center justify-center gap-3 active:opacity-90">
+        <i class="fa-solid fa-upload"></i>
+        立即上传（生成提取码）
+      </button>
+    </div>
 
-        function renderFileList() {
-            const container = document.getElementById('fileTable');
-            container.innerHTML = '';
+    <!-- Result -->
+    <div id="resultPanel" class="hidden mt-6 sm:mt-8 bg-zinc-900 rounded-2xl sm:rounded-3xl p-5 sm:p-8">
+      <div class="flex items-start justify-between gap-3 mb-5 sm:mb-6">
+        <div class="min-w-0">
+          <div class="text-sm text-violet-400">提取码</div>
+          <div id="extractCode" class="code-display text-3xl sm:text-5xl font-mono font-bold tracking-[0.15em] sm:tracking-[4px] text-white break-all"></div>
+        </div>
+        <button type="button" onclick="copyCode()" class="tap shrink-0 min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl bg-zinc-800 active:bg-zinc-700 text-violet-300">
+          <i class="fa-solid fa-copy text-xl"></i>
+        </button>
+      </div>
 
-            selectedFiles.forEach((file, index) => {
-                const row = document.createElement('div');
-                row.className = 'file-item flex items-center justify-between bg-zinc-900 hover:bg-zinc-800 p-4 rounded-2xl';
-                row.innerHTML = `
-                    <div class="flex items-center gap-4">
-                        <i class="fa-solid fa-file text-2xl text-zinc-400"></i>
-                        <div>
-                            <div class="font-medium">${file.name}</div>
-                            <div class="text-xs text-zinc-500">${(file.size/1024/1024).toFixed(1)} MB</div>
-                        </div>
-                    </div>
-                    <button onclick="removeFile(${index})" class="text-red-400 hover:text-red-500">
-                        <i class="fa-solid fa-xmark"></i>
-                    </button>
-                `;
-                container.appendChild(row);
-            });
+      <div class="grid grid-cols-1 xs:grid-cols-2 sm:grid-cols-3 gap-4 sm:gap-6 text-sm sm:text-base">
+        <div>
+          <div class="text-sm text-zinc-400 mb-1">过期时间</div>
+          <div id="expireTime" class="font-medium"></div>
+        </div>
+        <div>
+          <div class="text-sm text-zinc-400 mb-1">文件数量</div>
+          <div id="fileCount" class="font-medium"></div>
+        </div>
+        <div class="sm:col-span-1">
+          <div class="text-sm text-zinc-400 mb-1">提取次数</div>
+          <div id="extractLimit" class="font-medium"></div>
+        </div>
+      </div>
 
-            document.getElementById('fileList').classList.toggle('hidden', selectedFiles.length === 0);
-            document.getElementById('uploadButton').classList.toggle('hidden', selectedFiles.length === 0);
-        }
+      <button type="button" onclick="window.location.reload()"
+              class="tap mt-6 sm:mt-8 w-full min-h-[48px] py-3 text-sm border border-zinc-700 active:bg-zinc-800 rounded-2xl">
+        继续上传新文件
+      </button>
+    </div>
+  </div>
 
-        function removeFile(index) {
-            selectedFiles.splice(index, 1);
-            renderFileList();
-        }
+  <script>
+    let selectedFiles = [];
 
-        function clearAll() {
-            if (confirm('确定清空所有文件？')) {
-                selectedFiles = [];
-                renderFileList();
-            }
-        }
+    function handleFiles(files) {
+      for (let f of files) {
+        if (!selectedFiles.some(x => x.name === f.name && x.size === f.size)) selectedFiles.push(f);
+      }
+      renderFileList();
+    }
 
-        function uploadFiles() {
-            if (selectedFiles.length === 0) return;
+    function renderFileList() {
+      const container = document.getElementById('fileTable');
+      container.innerHTML = '';
+      selectedFiles.forEach((file, index) => {
+        const row = document.createElement('div');
+        row.className = 'file-item flex items-center gap-3 bg-zinc-900 p-3 sm:p-4 rounded-2xl';
+        const size = file.size >= 1048576 ? (file.size/1048576).toFixed(1)+' MB' : (file.size/1024).toFixed(1)+' KB';
+        row.innerHTML = `
+          <i class="fa-solid fa-file text-xl sm:text-2xl text-zinc-400 shrink-0"></i>
+          <div class="min-w-0 flex-1">
+            <div class="font-medium text-sm sm:text-base truncate">${escapeHtml(file.name)}</div>
+            <div class="text-xs text-zinc-500">${size}</div>
+          </div>
+          <button type="button" onclick="removeFile(${index})" class="tap shrink-0 min-h-[44px] min-w-[44px] text-red-400 active:text-red-300 flex items-center justify-center">
+            <i class="fa-solid fa-xmark text-lg"></i>
+          </button>`;
+        container.appendChild(row);
+      });
+      document.getElementById('fileList').classList.toggle('hidden', selectedFiles.length === 0);
+      document.getElementById('uploadButton').classList.toggle('hidden', selectedFiles.length === 0);
+    }
 
-            const formData = new FormData();
-            selectedFiles.forEach(file => {
-                formData.append('files', file);
-            });
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+    function removeFile(index) { selectedFiles.splice(index, 1); renderFileList(); }
+    function clearAll() {
+      if (confirm('确定清空所有文件？')) { selectedFiles = []; renderFileList(); }
+    }
 
-            // 有效期：小时 / 天 → 统一转小时提交
-            let val = parseFloat(document.getElementById('expireValue').value);
-            if (!val || val < 1) val = 1;
-            const unit = document.getElementById('expireUnit').value;
-            const hours = unit === 'day' ? val * 24 : val;
-            const maxDays = Number(document.getElementById('maxExpireHint').textContent) || 90;
-            if (hours > maxDays * 24) {
-                alert('有效期不能超过 ' + maxDays + ' 天');
-                return;
-            }
-            formData.append('expire_hours', String(hours));
+    function uploadFiles() {
+      if (selectedFiles.length === 0) return;
+      const formData = new FormData();
+      selectedFiles.forEach(file => formData.append('files', file));
+      let val = parseFloat(document.getElementById('expireValue').value);
+      if (!val || val < 1) val = 1;
+      const unit = document.getElementById('expireUnit').value;
+      const hours = unit === 'day' ? val * 24 : val;
+      const maxDays = Number(document.getElementById('maxExpireHint').textContent) || 90;
+      if (hours > maxDays * 24) { alert('有效期不能超过 ' + maxDays + ' 天'); return; }
+      formData.append('expire_hours', String(hours));
+      let maxExt = parseInt(document.getElementById('maxExtracts').value, 10);
+      if (isNaN(maxExt) || maxExt < 0) maxExt = 0;
+      formData.append('max_extracts', String(maxExt));
 
-            let maxExt = parseInt(document.getElementById('maxExtracts').value, 10);
-            if (isNaN(maxExt) || maxExt < 0) maxExt = 0;
-            formData.append('max_extracts', String(maxExt));
+      const btn = document.getElementById('btnUpload');
+      const oldHtml = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 上传中…';
 
-            const btn = document.querySelector('#uploadButton button');
-            const oldHtml = btn ? btn.innerHTML : '';
-            if (btn) {
-                btn.disabled = true;
-                btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 上传中…';
-            }
-
-            fetch('/api/upload', {
-                method: 'POST',
-                body: formData
-            })
-            .then(r => r.json())
-            .then(data => {
-                if (data.error) {
-                    alert(data.error);
-                    if (btn) { btn.disabled = false; btn.innerHTML = oldHtml; }
-                    return;
-                }
-                selectedFiles = [];
-                showResult(data);
-            })
-            .catch(err => {
-                alert('上传失败：' + err.message);
-                if (btn) { btn.disabled = false; btn.innerHTML = oldHtml; }
-            });
-        }
-
-        function showResult(data) {
-            document.getElementById('uploadZone').classList.add('hidden');
-            document.getElementById('fileList').classList.add('hidden');
-            document.getElementById('uploadButton').classList.add('hidden');
-            document.getElementById('resultPanel').classList.remove('hidden');
-
-            document.getElementById('extractCode').textContent = data.extract_code;
-            const hours = Number(data.expire_hours) || 0;
-            let expireLabel = '';
-            if (hours >= 24 && hours % 24 === 0) {
-                expireLabel = `${hours / 24} 天后`;
-            } else if (hours >= 24) {
-                const d = Math.floor(hours / 24);
-                const h = Math.round(hours % 24);
-                expireLabel = h ? `${d} 天 ${h} 小时后` : `${d} 天后`;
-            } else {
-                expireLabel = `${Math.round(hours)} 小时后`;
-            }
-            const expAt = data.expire_at ? new Date(data.expire_at * 1000).toLocaleString() : '';
-            document.getElementById('expireTime').innerHTML = `
-                <span class="text-violet-400">${expireLabel}</span> 过期
-                ${expAt ? `<div class="text-xs text-zinc-500 mt-1">${expAt}</div>` : ''}
-            `;
-            document.getElementById('fileCount').textContent = `${data.file_count} 个文件`;
-            const maxE = Number(data.max_extracts) || 0;
-            document.getElementById('extractLimit').textContent = maxE > 0 ? `限 ${maxE} 次（用尽自动销毁）` : '不限次数';
-
-            // optional extract link
-            let linkBox = document.getElementById('extractLinkBox');
-            if (!linkBox) {
-                linkBox = document.createElement('div');
-                linkBox.id = 'extractLinkBox';
-                linkBox.className = 'mt-4 text-sm break-all text-zinc-400';
-                document.getElementById('resultPanel').insertBefore(
-                    linkBox,
-                    document.getElementById('resultPanel').querySelector('button')
-                );
-            }
-            const url = data.extract_url || (`/extract?code=${data.extract_code}`);
-            linkBox.innerHTML = `提取页：<a class="text-violet-400 hover:underline" href="${url}" target="_blank">${url}</a>`;
-        }
-
-        function copyCode() {
-            const code = document.getElementById('extractCode').textContent;
-            navigator.clipboard.writeText(code).then(() => {
-                const btn = event.currentTarget;
-                const orig = btn.innerHTML;
-                btn.innerHTML = '✅ 已复制';
-                setTimeout(() => btn.innerHTML = orig, 1500);
-            });
-        }
-
-        // Tailwind init
-        function initTailwind() {
-            // Already loaded via CDN
-        }
-
-        // Drag & drop
-        document.addEventListener('dragover', e => {
-            e.preventDefault();
-            const zone = document.getElementById('uploadZone');
-            zone.classList.add('dragover');
+      fetch('/api/upload', { method: 'POST', body: formData })
+        .then(r => r.json())
+        .then(data => {
+          if (data.error) { alert(data.error); btn.disabled = false; btn.innerHTML = oldHtml; return; }
+          selectedFiles = [];
+          showResult(data);
+        })
+        .catch(err => {
+          alert('上传失败：' + err.message);
+          btn.disabled = false; btn.innerHTML = oldHtml;
         });
+    }
 
-        document.addEventListener('dragleave', () => {
-            document.getElementById('uploadZone').classList.remove('dragover');
-        });
+    function showResult(data) {
+      document.getElementById('uploadZone').classList.add('hidden');
+      document.getElementById('fileList').classList.add('hidden');
+      document.getElementById('uploadButton').classList.add('hidden');
+      document.getElementById('resultPanel').classList.remove('hidden');
+      document.getElementById('extractCode').textContent = data.extract_code;
+      const hours = Number(data.expire_hours) || 0;
+      let expireLabel = '';
+      if (hours >= 24 && hours % 24 === 0) expireLabel = `${hours / 24} 天后`;
+      else if (hours >= 24) {
+        const d = Math.floor(hours / 24), h = Math.round(hours % 24);
+        expireLabel = h ? `${d} 天 ${h} 小时后` : `${d} 天后`;
+      } else expireLabel = `${Math.round(hours)} 小时后`;
+      const expAt = data.expire_at ? new Date(data.expire_at * 1000).toLocaleString() : '';
+      document.getElementById('expireTime').innerHTML =
+        `<span class="text-violet-400">${expireLabel}</span> 过期` +
+        (expAt ? `<div class="text-xs text-zinc-500 mt-1">${expAt}</div>` : '');
+      document.getElementById('fileCount').textContent = `${data.file_count} 个文件`;
+      const maxE = Number(data.max_extracts) || 0;
+      document.getElementById('extractLimit').textContent = maxE > 0 ? `限 ${maxE} 次（用尽自动销毁）` : '不限次数';
 
-        document.addEventListener('drop', e => {
-            e.preventDefault();
-            document.getElementById('uploadZone').classList.remove('dragover');
-            const files = e.dataTransfer.files;
-            handleFiles(files);
-        });
+      let linkBox = document.getElementById('extractLinkBox');
+      if (!linkBox) {
+        linkBox = document.createElement('div');
+        linkBox.id = 'extractLinkBox';
+        linkBox.className = 'mt-4 text-sm break-all text-zinc-400';
+        document.getElementById('resultPanel').insertBefore(
+          linkBox, document.getElementById('resultPanel').querySelector('button')
+        );
+      }
+      const url = data.extract_url || (`/extract?code=${data.extract_code}`);
+      linkBox.innerHTML = `提取页：<a class="text-violet-400 underline" href="${url}">${url}</a>`;
+    }
 
-        // Keyboard support
-        document.addEventListener('keydown', e => {
-            if (e.key === 'Enter' && !document.getElementById('uploadButton').classList.contains('hidden')) {
-                uploadFiles();
-            }
-        });
+    function copyCode() {
+      const code = document.getElementById('extractCode').textContent;
+      const done = () => {
+        const t = document.createElement('div');
+        t.className = 'fixed bottom-6 left-1/2 -translate-x-1/2 bg-emerald-600 text-white text-sm px-4 py-2 rounded-full z-50';
+        t.textContent = '提取码已复制';
+        document.body.appendChild(t);
+        setTimeout(() => t.remove(), 1500);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(code).then(done).catch(() => fallbackCopy(code, done));
+      } else fallbackCopy(code, done);
+    }
+    function fallbackCopy(text, done) {
+      const ta = document.createElement('textarea');
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); done(); } catch(e) { alert(text); }
+      ta.remove();
+    }
 
-        // Auto check admin login on load (demo)
-        window.onload = () => {
-            // For demo: if no admin, show message
-            console.log('%c文件流转系统已启动 - 拖拽上传多文件', 'color:#c026d3; font-size:13px');
-        };
-    </script>
+    const zone = document.getElementById('uploadZone');
+    zone.addEventListener('click', e => {
+      if (e.target.closest('button') || e.target.closest('input')) return;
+      document.getElementById('fileInput').click();
+    });
+    ;['dragenter','dragover'].forEach(ev => {
+      zone.addEventListener(ev, e => { e.preventDefault(); e.stopPropagation(); zone.classList.add('dragover'); });
+    });
+    ;['dragleave','drop'].forEach(ev => {
+      zone.addEventListener(ev, e => { e.preventDefault(); e.stopPropagation(); zone.classList.remove('dragover'); });
+    });
+    zone.addEventListener('drop', e => { handleFiles(e.dataTransfer.files); });
+  </script>
 </body>
 </html>

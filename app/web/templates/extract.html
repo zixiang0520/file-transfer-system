@@ -2,60 +2,75 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1" />
+  <meta name="theme-color" content="#09090b" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
   <title>提取文件 - 文件流转系统</title>
   <script src="https://cdn.tailwindcss.com"></script>
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
   <style>
-    body { font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; }
+    html { -webkit-text-size-adjust: 100%; }
+    body {
+      font-family: system-ui, -apple-system, 'Segoe UI', 'Noto Sans SC', sans-serif;
+      padding-bottom: env(safe-area-inset-bottom, 0);
+    }
+    input, select, textarea, button { font-size: 16px; }
+    .tap { -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
   </style>
 </head>
-<body class="bg-zinc-950 text-white min-h-screen">
-  <div class="max-w-3xl mx-auto p-6">
-    <div class="flex items-center justify-between mb-8">
+<body class="bg-zinc-950 text-white min-h-screen min-h-[100dvh]">
+  <div class="max-w-3xl mx-auto px-4 sm:px-6 py-4 sm:py-8">
+    <header class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-6 sm:mb-8">
       <div>
-        <h1 class="text-3xl font-bold">提取文件</h1>
-        <p class="text-zinc-400 text-sm mt-1">输入提取码查看并下载文件</p>
+        <h1 class="text-2xl sm:text-3xl font-bold">提取文件</h1>
+        <p class="text-zinc-400 text-sm mt-1">输入提取码查看并下载</p>
       </div>
-      <a href="/" class="px-4 py-2 bg-zinc-900 hover:bg-zinc-800 rounded-xl text-sm">
-        <i class="fa-solid fa-upload mr-1"></i> 去上传
+      <a href="/" class="tap inline-flex items-center justify-center min-h-[44px] px-4 py-2 bg-zinc-900 active:bg-zinc-800 rounded-xl text-sm w-full sm:w-auto">
+        <i class="fa-solid fa-upload mr-2"></i> 去上传
       </a>
-    </div>
+    </header>
 
-    <div class="bg-zinc-900 rounded-3xl p-6 mb-6">
-      <label class="text-sm text-zinc-400">提取码</label>
-      <div class="flex gap-3 mt-2">
-        <input id="codeInput" type="text" placeholder="例如 A3K9M2"
-               class="flex-1 bg-zinc-800 border border-zinc-700 rounded-2xl px-4 py-3 tracking-widest uppercase font-mono text-lg outline-none focus:border-violet-500"
-               maxlength="12" />
-        <button onclick="lookup()" class="px-6 py-3 bg-violet-600 hover:bg-violet-500 rounded-2xl font-medium">
+    <div class="bg-zinc-900 rounded-2xl sm:rounded-3xl p-4 sm:p-6 mb-5 sm:mb-6">
+      <label class="text-sm text-zinc-400" for="codeInput">提取码</label>
+      <div class="flex flex-col sm:flex-row gap-3 mt-2">
+        <input id="codeInput" type="text" inputmode="text" autocomplete="off" autocorrect="off" autocapitalize="characters"
+               placeholder="例如 A3K9M2"
+               class="w-full flex-1 min-h-[48px] bg-zinc-800 border border-zinc-700 rounded-2xl px-4 py-3 tracking-widest uppercase font-mono text-lg outline-none focus:border-violet-500" />
+        <button type="button" onclick="lookup()"
+                class="tap w-full sm:w-auto min-h-[48px] px-6 py-3 bg-violet-600 active:bg-violet-500 rounded-2xl font-medium shrink-0">
           查询
         </button>
       </div>
       <p id="err" class="text-red-400 text-sm mt-3 hidden"></p>
     </div>
 
-    <div id="panel" class="hidden bg-zinc-900 rounded-3xl p-6">
-      <div class="flex flex-wrap gap-6 mb-6 text-sm">
-        <div><span class="text-zinc-400">提取码</span><div id="pCode" class="font-mono text-2xl font-bold tracking-widest"></div></div>
-        <div><span class="text-zinc-400">文件数</span><div id="pCount" class="text-lg"></div></div>
-        <div><span class="text-zinc-400">总大小</span><div id="pSize" class="text-lg"></div></div>
-        <div><span class="text-zinc-400">过期时间</span><div id="pExp" class="text-lg"></div></div>
-        <div><span class="text-zinc-400">剩余提取</span><div id="pRemain" class="text-lg"></div></div>
+    <div id="panel" class="hidden bg-zinc-900 rounded-2xl sm:rounded-3xl p-4 sm:p-6">
+      <div class="grid grid-cols-2 sm:grid-cols-3 gap-3 sm:gap-4 mb-5 sm:mb-6 text-sm">
+        <div class="col-span-2 sm:col-span-1">
+          <span class="text-zinc-400 text-xs">提取码</span>
+          <div id="pCode" class="font-mono text-xl sm:text-2xl font-bold tracking-widest break-all"></div>
+        </div>
+        <div><span class="text-zinc-400 text-xs">文件数</span><div id="pCount" class="text-base sm:text-lg"></div></div>
+        <div><span class="text-zinc-400 text-xs">总大小</span><div id="pSize" class="text-base sm:text-lg"></div></div>
+        <div class="col-span-2 sm:col-span-1"><span class="text-zinc-400 text-xs">过期时间</span><div id="pExp" class="text-sm sm:text-lg break-all"></div></div>
+        <div><span class="text-zinc-400 text-xs">剩余提取</span><div id="pRemain" class="text-base sm:text-lg"></div></div>
       </div>
 
-      <div class="flex flex-wrap items-center gap-3 mb-4">
-        <label class="flex items-center gap-2 text-sm text-zinc-300 cursor-pointer select-none">
-          <input id="chkAll" type="checkbox" class="w-4 h-4 rounded accent-violet-500" onchange="toggleAll(this.checked)" />
+      <!-- 操作条：手机纵向全宽 -->
+      <div class="flex flex-col sm:flex-row sm:flex-wrap gap-2 sm:gap-3 mb-4">
+        <label class="flex items-center gap-2 text-sm text-zinc-300 cursor-pointer select-none min-h-[44px]">
+          <input id="chkAll" type="checkbox" class="w-5 h-5 rounded accent-violet-500" onchange="toggleAll(this.checked)" />
           全选
         </label>
-        <button onclick="downloadSelected()" class="px-4 py-2 bg-violet-600 hover:bg-violet-500 rounded-xl text-sm">
-          <i class="fa-solid fa-download mr-1"></i> 下载已选择的文件
+        <button type="button" onclick="downloadSelected()"
+                class="tap w-full sm:w-auto min-h-[44px] px-4 py-2.5 bg-violet-600 active:bg-violet-500 rounded-xl text-sm">
+          <i class="fa-solid fa-download mr-1"></i> 下载已选择
         </button>
-        <button onclick="downloadAll()" class="px-4 py-2 bg-fuchsia-600 hover:bg-fuchsia-500 rounded-xl text-sm">
-          <i class="fa-solid fa-file-zipper mr-1"></i> 全部下载 (ZIP)
+        <button type="button" onclick="downloadAll()"
+                class="tap w-full sm:w-auto min-h-[44px] px-4 py-2.5 bg-fuchsia-600 active:bg-fuchsia-500 rounded-xl text-sm">
+          <i class="fa-solid fa-file-zipper mr-1"></i> 全部 ZIP
         </button>
-        <span id="selHint" class="text-xs text-zinc-500">已选 0 个</span>
+        <span id="selHint" class="text-xs text-zinc-500 self-center">已选 0 个</span>
       </div>
 
       <div id="fileList" class="space-y-2"></div>
@@ -113,26 +128,25 @@
       document.getElementById('pExp').textContent = fmtTime(data.expire_at);
       const rem = data.remaining_extracts;
       const maxE = data.max_extracts || 0;
-      document.getElementById('pRemain').textContent =
-        maxE > 0 ? `${rem} / ${maxE}` : '不限';
+      document.getElementById('pRemain').textContent = maxE > 0 ? `${rem} / ${maxE}` : '不限';
       const box = document.getElementById('fileList');
       box.innerHTML = '';
       document.getElementById('chkAll').checked = false;
       document.getElementById('chkAll').indeterminate = false;
       (data.files||[]).forEach(f => {
         const row = document.createElement('div');
-        row.className = 'flex items-center justify-between gap-3 bg-zinc-800/80 rounded-2xl px-4 py-3';
+        row.className = 'flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 bg-zinc-800/80 rounded-2xl px-3 sm:px-4 py-3';
         row.innerHTML = `
           <label class="flex items-center gap-3 min-w-0 flex-1 cursor-pointer">
-            <input type="checkbox" class="file-chk w-4 h-4 rounded accent-violet-500 shrink-0" value="${f.id}" onchange="updateSelHint()" />
+            <input type="checkbox" class="file-chk w-5 h-5 rounded accent-violet-500 shrink-0" value="${f.id}" onchange="updateSelHint()" />
             <div class="min-w-0">
-              <div class="font-medium truncate">${f.name}</div>
+              <div class="font-medium text-sm sm:text-base break-all sm:truncate">${f.name}</div>
               <div class="text-xs text-zinc-500">${fmtSize(f.size)}</div>
             </div>
           </label>
-          <a class="px-3 py-1.5 bg-violet-600 hover:bg-violet-500 rounded-xl text-sm shrink-0"
+          <a class="tap inline-flex items-center justify-center min-h-[44px] px-4 py-2 bg-violet-600 active:bg-violet-500 rounded-xl text-sm w-full sm:w-auto shrink-0"
              href="/api/download/${encodeURIComponent(data.extract_code)}/${f.id}">
-            <i class="fa-solid fa-download"></i> 下载
+            <i class="fa-solid fa-download mr-1"></i> 下载
           </a>`;
         box.appendChild(row);
       });
@@ -145,11 +159,7 @@
     function downloadSelected() {
       if (!currentCode) return;
       const ids = selectedIds();
-      if (!ids.length) {
-        alert('请先勾选要下载的文件');
-        return;
-      }
-      // 只选 1 个时直接单文件下载；多个打成 ZIP
+      if (!ids.length) { alert('请先勾选要下载的文件'); return; }
       if (ids.length === 1) {
         window.location.href = '/api/download/' + encodeURIComponent(currentCode) + '/' + ids[0];
         return;

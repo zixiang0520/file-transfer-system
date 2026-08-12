@@ -193,8 +193,15 @@ async def api_config_save(request: Request, _: None = Depends(require_admin)):
             for k in ("authorization", "mail_cookies", "password"):
                 if k in y:
                     val = y[k]
-                    if isinstance(val, str) and val and "…" not in val and val != "****":
-                        cfg["storage"]["yun139"][k] = val
+                    if not isinstance(val, str):
+                        continue
+                    val = val.strip()
+                    # empty / masked => keep existing
+                    if not val or "…" in val or "..." in val or val == "****" or set(val) <= {"*"}:
+                        continue
+                    if k == "authorization" and val.lower().startswith("basic "):
+                        val = val[6:].strip()
+                    cfg["storage"]["yun139"][k] = val
 
     if "qq" in body and isinstance(body["qq"], dict):
         q = body["qq"]
@@ -274,17 +281,13 @@ def api_package(code: str):
 
 @app.get("/api/download/{code}/{file_id}")
 def api_download(code: str, file_id: int):
+    """Redirect to 移动云盘 download URL (no local file)."""
     try:
-        fmeta, path, should_destroy = resolve_download(code, file_id)
-        pkg = None
+        from fastapi.responses import RedirectResponse
+
+        fmeta, url, should_destroy = resolve_download(code, file_id)
         bg = None
         if should_destroy:
-            # destroy AFTER file is sent
-            from app.core.transfer import purge_package
-            from app import db as dbmod
-
-            row = dbmod.get_package_by_code(code)
-            # may already be counted; use file's package_id
             pid = int(fmeta["package_id"])
 
             def _destroy():
@@ -294,12 +297,10 @@ def api_download(code: str, file_id: int):
                     pass
 
             bg = BackgroundTask(_destroy)
-        return FileResponse(
-            path,
-            filename=fmeta["original_name"],
-            media_type=fmeta.get("content_type") or "application/octet-stream",
-            background=bg,
-        )
+        resp = RedirectResponse(url=url, status_code=302)
+        if bg is not None:
+            resp.background = bg
+        return resp
     except TransferError as e:
         return JSONResponse({"error": e.message}, status_code=e.code)
 

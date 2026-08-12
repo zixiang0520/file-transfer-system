@@ -62,7 +62,7 @@ DEFAULTS: Dict[str, Any] = {
     },
     "storage": {
         # local | yun139
-        "backend": "local",
+        "backend": "yun139",
         "local_root": str(STORAGE_DIR),
         "yun139": {
             "enabled": False,
@@ -70,10 +70,12 @@ DEFAULTS: Dict[str, Any] = {
             "authorization": "",
             "root_folder_id": "/",
             "account_hint": "",
-            # optional future: mail cookies + password login
+            # OpenList long-term auth: mail cookies + password login fallback
             "mail_cookies": "",
             "username": "",
             "password": "",
+            "user_domain_id": "",
+            "resolved_folder_id": "",
         },
     },
     "qq": {

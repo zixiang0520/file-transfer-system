@@ -12,13 +12,26 @@
 - 提取页：全选 / 复选框 / 「下载已选择的文件」 / 全部 ZIP / 单文件下载
 - 管理后台：登录、改管理员账号密码、包裹管理、上传限额、云盘绑定、清理过期包裹
 
-## 移动云盘（已完成）
+## 移动云盘（已完成 · 对齐 OpenList 长期绑定）
 
 **根目录支持两种写法**：
 - 真实 `parentFileId`（如 `/`）
 - **显示路径**：`/文件流转`、`文件流转/子目录` —— **系统会自动按文件夹名查找，不存在则自动创建**，并返回真实 parentFileId 缓存
 
-登录 [yun.139.com](https://yun.139.com) → 开发者工具抓 `hcy/file/list` 的 **Authorization**，只填 **Basic 后面的内容**。
+### 鉴权（推荐长期方案）
+
+参考 [OpenList 139 文档](https://doc.oplist.org.cn/guide/drivers/139)：
+
+| 字段 | 说明 |
+|------|------|
+| **邮箱 Cookie** | 登录 [mail.10086.cn](https://mail.10086.cn/) 后复制 Cookie 头字符串（需含 `Os_SSo_Sid`、`RMKEY`） |
+| **用户名** | 手机号或邮箱 |
+| **密码** | 139 账号密码 |
+| Authorization | 可留空；系统会自动登录生成，并在上传失败时自动刷新/重登 |
+
+也可只填 Authorization（yun.139.com → `hcy/file/list` → Basic 后内容），但过期后需手动更新。
+
+上传遇到 `认证失败(05050006)` 时：若已配置 Cookie+账号密码，服务会自动重新登录并重试。
 
 ## 快速启动（本机 Python）
 
@@ -63,7 +76,9 @@ docker compose up -d --build
 | `upload.default_expire_hours` | 默认有效期（小时） |
 | `upload.max_expire_days` | 最长有效期（天） |
 | `storage.backend` | `yun139`（已完成） |
-| `storage.yun139.authorization` | 移动云盘 Basic 后的 token |
+| `storage.yun139.authorization` | 移动云盘 Basic 后的 token（可自动生成） |
+| `storage.yun139.mail_cookies` | 邮箱 Cookie（长期续期） |
+| `storage.yun139.username` / `password` | 密码登录回退 |
 | `storage.yun139.root_folder_id` | 根目录（支持 `/` 或 `/文件流转` 等路径） |
 
 ## API 摘要
