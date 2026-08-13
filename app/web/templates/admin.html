@@ -43,6 +43,17 @@
         <div id="pkgList" class="space-y-3 text-sm"></div>
       </div>
 
+      <div class="bg-zinc-900 rounded-2xl sm:rounded-3xl p-4 sm:p-6">
+        <h2 class="font-medium mb-1">IP 封禁</h2>
+        <p class="text-xs text-zinc-500 mb-4">发现恶意/危险文件后，在包裹上点「封禁 IP」，或在此手动添加。被封 IP 无法再上传。</p>
+        <div class="flex flex-col sm:flex-row gap-2 mb-4">
+          <input id="banIpInput" class="flex-1 min-h-[44px] bg-zinc-800 rounded-xl px-3 py-2.5" placeholder="IP 地址，如 1.2.3.4" />
+          <input id="banReasonInput" class="flex-1 min-h-[44px] bg-zinc-800 rounded-xl px-3 py-2.5" placeholder="原因（可选）" />
+          <button type="button" onclick="manualBan()" class="tap min-h-[44px] px-4 py-2 bg-red-900/50 active:bg-red-900/70 rounded-xl text-sm w-full sm:w-auto">封禁</button>
+        </div>
+        <div id="banList" class="space-y-2 text-sm"></div>
+      </div>
+
       <div class="bg-zinc-900 rounded-2xl sm:rounded-3xl p-4 sm:p-6 space-y-4">
         <h2 class="font-medium">上传与存储设置</h2>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -135,7 +146,7 @@
       if(!r.ok){document.getElementById('loginErr').textContent='登录失败';document.getElementById('loginErr').classList.remove('hidden');return;}
       document.getElementById('loginBox').classList.add('hidden');
       document.getElementById('dash').classList.remove('hidden');
-      await loadCfg(); await loadPackages();
+      await loadCfg(); await loadPackages(); await loadBans();
     }
     async function logout(){await fetch('/api/logout',{method:'POST'}); location.reload();}
     async function loadCfg(){
@@ -230,18 +241,73 @@
       (data.items||[]).forEach(p=>{
         const div=document.createElement('div');
         div.className='flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 bg-zinc-800/70 rounded-2xl px-3 sm:px-4 py-3';
+        const ip = p.uploader_ip || '';
+        const ipHtml = ip
+          ? `<span class="font-mono">${esc(ip)}</span>${p.ip_banned?' <span class="text-rose-400">已封禁</span>':''}`
+          : '<span class="text-zinc-500">无 IP</span>';
+        const names = (p.files||[]).map(f=>f.name).slice(0,3).join('、');
+        const more = (p.files||[]).length>3 ? '…' : '';
         div.innerHTML=`
           <div class="min-w-0">
-            <div class="font-mono text-base sm:text-lg tracking-widest break-all">${p.extract_code}</div>
+            <div class="font-mono text-base sm:text-lg tracking-widest break-all">${esc(p.extract_code)}</div>
             <div class="text-xs text-zinc-400 mt-1 leading-relaxed">${p.file_count||0} 文件 · ${fmtSize(p.total_size)} · 过期 ${fmtTime(p.expire_at)} · 下载 ${p.download_count||0}${p.max_extracts?(' / 限'+p.max_extracts):''}</div>
+            <div class="text-xs text-zinc-500 mt-1 truncate">文件：${esc(names)}${more}</div>
+            <div class="text-xs text-zinc-300 mt-1">上传 IP：${ipHtml}</div>
           </div>
-          <div class="flex gap-2 w-full sm:w-auto">
-            <a class="tap flex-1 sm:flex-none text-center min-h-[40px] px-3 py-2 bg-zinc-700 active:bg-zinc-600 rounded-lg" href="/extract?code=${p.extract_code}" target="_blank">查看</a>
+          <div class="flex flex-wrap gap-2 w-full sm:w-auto">
+            <a class="tap flex-1 sm:flex-none text-center min-h-[40px] px-3 py-2 bg-zinc-700 active:bg-zinc-600 rounded-lg" href="/extract?code=${encodeURIComponent(p.extract_code)}" target="_blank">查看</a>
+            ${ip && !p.ip_banned ? `<button type="button" class="tap flex-1 sm:flex-none min-h-[40px] px-3 py-2 bg-amber-900/50 active:bg-amber-900/70 rounded-lg" onclick="banPkgIp(${p.id}, '${esc(ip)}')">封禁 IP</button>` : ''}
             <button type="button" class="tap flex-1 sm:flex-none min-h-[40px] px-3 py-2 bg-red-900/50 active:bg-red-900/70 rounded-lg" onclick="delPkg(${p.id})">删除</button>
           </div>`;
         box.appendChild(div);
       });
       if(!(data.items||[]).length) box.innerHTML='<div class="text-zinc-500">暂无包裹</div>';
+    }
+    function esc(s){ return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+    async function loadBans(){
+      const r=await fetch('/api/banned-ips'); if(!r.ok) return;
+      const data=await r.json();
+      const box=document.getElementById('banList'); box.innerHTML='';
+      (data.items||[]).forEach(b=>{
+        const div=document.createElement('div');
+        div.className='flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 bg-zinc-800/70 rounded-xl px-3 py-2.5';
+        const when = b.created_at ? fmtTime(b.created_at) : '';
+        div.innerHTML=`
+          <div class="min-w-0">
+            <div class="font-mono break-all">${esc(b.ip)}</div>
+            <div class="text-xs text-zinc-500 mt-0.5">${esc(b.reason||'无原因')} · 历史上传 ${b.upload_count||0} 次 · ${when}</div>
+          </div>
+          <button type="button" class="tap min-h-[40px] px-3 py-2 bg-zinc-700 active:bg-zinc-600 rounded-lg" onclick="unbanIp('${esc(b.ip)}')">解封</button>`;
+        box.appendChild(div);
+      });
+      if(!(data.items||[]).length) box.innerHTML='<div class="text-zinc-500">暂无封禁</div>';
+    }
+    async function banPkgIp(id, ip){
+      const reason = prompt('封禁 '+ip+' 的原因（可空）','危险文件') || '';
+      const alsoDel = confirm('同时删除这个包裹及云盘文件？');
+      const r=await fetch('/api/packages/'+id+'/ban-ip',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reason, delete_package: alsoDel})});
+      const d=await r.json().catch(()=>({}));
+      if(!r.ok){ alert(d.detail||d.error||'封禁失败'); return; }
+      alert('已封禁 '+ (d.ip||ip));
+      loadPackages(); loadBans();
+    }
+    async function manualBan(){
+      const ip=document.getElementById('banIpInput').value.trim();
+      const reason=document.getElementById('banReasonInput').value.trim();
+      if(!ip){ alert('请输入 IP'); return; }
+      const r=await fetch('/api/banned-ips',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ip,reason})});
+      const d=await r.json().catch(()=>({}));
+      if(!r.ok){ alert(d.detail||d.error||'封禁失败'); return; }
+      document.getElementById('banIpInput').value='';
+      document.getElementById('banReasonInput').value='';
+      loadPackages(); loadBans();
+    }
+    async function unbanIp(ip){
+      if(!confirm('确定解封 '+ip+' ？')) return;
+      const r=await fetch('/api/banned-ips?ip='+encodeURIComponent(ip),{method:'DELETE'});
+      const d=await r.json().catch(()=>({}));
+      if(!r.ok){ alert(d.detail||d.error||'解封失败'); return; }
+      loadPackages(); loadBans();
     }
     async function delPkg(id){
       if(!confirm('确定删除该提取码及文件？')) return;
@@ -274,7 +340,7 @@
     }
     document.getElementById('p').addEventListener('keydown', e => { if(e.key==='Enter') login(); });
     fetch('/api/config').then(r=>{
-      if(r.ok){document.getElementById('loginBox').classList.add('hidden');document.getElementById('dash').classList.remove('hidden');loadCfg();loadPackages();}
+      if(r.ok){document.getElementById('loginBox').classList.add('hidden');document.getElementById('dash').classList.remove('hidden');loadCfg();loadPackages();loadBans();}
     });
   </script>
 </body>

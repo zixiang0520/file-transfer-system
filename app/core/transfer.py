@@ -59,6 +59,7 @@ def create_package_with_files(
     title: str = "",
     uploader: str = "",
     source: str = "web",
+    client_ip: str = "",
 ) -> Dict[str, Any]:
     cfg = load_config()
     up = cfg.get("upload") or {}
@@ -66,6 +67,12 @@ def create_package_with_files(
     y = st.get("yun139") or {}
     if not y.get("enabled") or not (y.get("authorization") or "").strip():
         raise TransferError("未配置移动云盘：请在后台启用并填写 Authorization", 503)
+
+    ip = (client_ip or "").strip()
+    if ip:
+        banned = db.is_ip_banned(ip)
+        if banned:
+            raise TransferError("该地址已被禁止上传", 403)
 
     max_n = int(up.get("max_files_per_package") or 50)
     if not files:
@@ -117,6 +124,7 @@ def create_package_with_files(
         uploader=uploader,
         source=source,
         max_extracts=extracts,
+        uploader_ip=ip,
     )
 
     saved = []

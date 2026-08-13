@@ -12,7 +12,7 @@
 - 有效期：可选**小时 / 天**；后台可设**最长有效期（天）**
 - 提取次数：`0=不限`，用尽后自动销毁
 - 提取页：全选 / 复选框 / 「下载已选择的文件」 / 全部 ZIP / 单文件下载
-- 管理后台：登录、改管理员账号密码、包裹管理、上传限额、云盘绑定、清理过期包裹
+- 管理后台：登录、改管理员账号密码、包裹管理、**上传 IP 记录 / 封禁**、上传限额、云盘绑定、清理过期包裹
 - 前台 / 提取 / 后台均做**手机平板适配**
 - **不做 QQ 机器人**（纯 Web）
 
@@ -134,6 +134,9 @@ docker compose up -d --build
 | GET | `/api/download-selected/{code}` | 勾选 ZIP |
 | GET | `/api/download-all/{code}` | 全部 ZIP |
 | POST | `/api/yun139/test` | 后台：测试连接 / 触发续期（需登录） |
+| GET | `/api/packages` | 后台：包裹列表（含 `uploader_ip`） |
+| POST | `/api/packages/{id}/ban-ip` | 后台：封禁该包裹上传 IP，可选删包裹 |
+| GET/POST/DELETE | `/api/banned-ips` | 后台：封禁名单（DELETE `?ip=`） |
 
 ## 目录结构
 

@@ -1,6 +1,7 @@
 """File Transfer System - FastAPI entry."""
 from __future__ import annotations
 
+import ipaddress
 import logging
 import threading
 import time
@@ -57,6 +58,51 @@ if STATIC.exists():
 def require_admin(request: Request):
     if not request.session.get("admin"):
         raise HTTPException(status_code=401, detail="未登录")
+
+
+def _normalize_ip(raw: str) -> str:
+    raw = (raw or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith("[") and "]" in raw:
+        raw = raw[1 : raw.index("]")]
+    if raw.count(":") == 1 and "." in raw:
+        raw = raw.rsplit(":", 1)[0]
+    try:
+        ip = ipaddress.ip_address(raw)
+        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
+            return str(ip.ipv4_mapped)
+        return str(ip)
+    except ValueError:
+        return ""
+
+
+def _is_private_or_local(ip: str) -> bool:
+    try:
+        obj = ipaddress.ip_address(ip)
+        return bool(obj.is_private or obj.is_loopback or obj.is_link_local)
+    except ValueError:
+        return True
+
+
+def get_client_ip(request: Request) -> str:
+    """Peer address; if peer is loopback/private, honor X-Real-IP / X-Forwarded-For."""
+    peer = ""
+    if request.client and request.client.host:
+        peer = _normalize_ip(request.client.host)
+    xri = _normalize_ip(request.headers.get("x-real-ip") or "")
+    xff = (request.headers.get("x-forwarded-for") or "").split(",")[0]
+    xff = _normalize_ip(xff)
+    if peer and not _is_private_or_local(peer):
+        return peer
+    return xri or xff or peer
+
+
+def _validate_ban_ip(raw: str) -> str:
+    ip = _normalize_ip(raw)
+    if not ip:
+        raise HTTPException(status_code=400, detail="IP 地址无效")
+    return ip
 
 
 @app.on_event("startup")
@@ -243,6 +289,7 @@ async def api_config_save(request: Request, _: None = Depends(require_admin)):
 
 @app.post("/api/upload")
 async def api_upload(
+    request: Request,
     files: List[UploadFile] = File(...),
     expire_hours: Optional[float] = Form(None),
     max_extracts: Optional[int] = Form(None),
@@ -259,6 +306,7 @@ async def api_upload(
             max_extracts=max_extracts,
             title=title,
             source="web",
+            client_ip=get_client_ip(request),
         )
         cfg = load_config()
         base = (cfg.get("site") or {}).get("public_base_url") or ""
@@ -361,12 +409,14 @@ def api_download_selected(code: str, ids: str = ""):
 @app.get("/api/packages")
 def api_packages(limit: int = 100, offset: int = 0, _: None = Depends(require_admin)):
     rows = db.list_packages(limit=limit, offset=offset)
-    # enrich
+    banned = {b["ip"] for b in db.list_banned_ips()}
     out = []
     for r in rows:
+        ip = (r.get("uploader_ip") or "").strip()
         out.append(
             {
                 **r,
+                "ip_banned": bool(ip and ip in banned),
                 "files": [
                     {"id": f["id"], "name": f["original_name"], "size": f["size"]}
                     for f in db.list_files(int(r["id"]))
@@ -380,6 +430,64 @@ def api_packages(limit: int = 100, offset: int = 0, _: None = Depends(require_ad
 def api_delete_package(package_id: int, _: None = Depends(require_admin)):
     purge_package(package_id)
     return {"ok": True}
+
+
+@app.post("/api/packages/{package_id}/ban-ip")
+async def api_ban_package_ip(
+    package_id: int, request: Request, _: None = Depends(require_admin)
+):
+    pkg = db.get_package(package_id)
+    if not pkg:
+        raise HTTPException(status_code=404, detail="包裹不存在")
+    ip = _validate_ban_ip(pkg.get("uploader_ip") or "")
+    body = {}
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            body = {}
+    except Exception:
+        body = {}
+    reason = (body.get("reason") or "").strip() or f"包裹 {pkg.get('extract_code')}"
+    who = request.session.get("admin_user") or "admin"
+    rec = db.ban_ip(ip, reason=reason, created_by=who)
+    deleted = False
+    if body.get("delete_package"):
+        purge_package(package_id)
+        deleted = True
+    return {
+        "ok": True,
+        "ip": rec.get("ip") or ip,
+        "reason": rec.get("reason") or reason,
+        "deleted_package": deleted,
+        "upload_count": db.count_packages_by_ip(ip),
+    }
+
+
+@app.get("/api/banned-ips")
+def api_list_banned(_: None = Depends(require_admin)):
+    items = []
+    for rec in db.list_banned_ips():
+        items.append({**rec, "upload_count": db.count_packages_by_ip(rec["ip"])})
+    return {"items": items}
+
+
+@app.post("/api/banned-ips")
+async def api_ban_ip(request: Request, _: None = Depends(require_admin)):
+    body = await request.json()
+    ip = _validate_ban_ip((body or {}).get("ip") or "")
+    reason = ((body or {}).get("reason") or "").strip()
+    who = request.session.get("admin_user") or "admin"
+    rec = db.ban_ip(ip, reason=reason, created_by=who)
+    return {"ok": True, "item": rec}
+
+
+@app.delete("/api/banned-ips")
+def api_unban_ip(ip: str, _: None = Depends(require_admin)):
+    ip = _validate_ban_ip(ip)
+    ok = db.unban_ip(ip)
+    if not ok:
+        raise HTTPException(status_code=404, detail="该 IP 不在封禁名单")
+    return {"ok": True, "ip": ip}
 
 
 @app.post("/api/cleanup")
@@ -423,6 +531,7 @@ async def bot_upload(
             max_extracts=max_extracts,
             title=title,
             source="qq",
+            client_ip=get_client_ip(request),
         )
         return result
     except TransferError as e:

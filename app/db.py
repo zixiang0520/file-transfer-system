@@ -56,12 +56,27 @@ def init_db() -> None:
                 CREATE INDEX IF NOT EXISTS idx_files_pkg ON files(package_id);
                 """
             )
-            # migrate older DBs missing max_extracts
+            # migrate older DBs
             cols = {r[1] for r in con.execute("PRAGMA table_info(packages)").fetchall()}
             if "max_extracts" not in cols:
                 con.execute(
                     "ALTER TABLE packages ADD COLUMN max_extracts INTEGER DEFAULT 0"
                 )
+            if "uploader_ip" not in cols:
+                con.execute(
+                    "ALTER TABLE packages ADD COLUMN uploader_ip TEXT DEFAULT ''"
+                )
+            con.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS banned_ips (
+                    ip TEXT PRIMARY KEY,
+                    reason TEXT DEFAULT '',
+                    created_at REAL NOT NULL,
+                    created_by TEXT DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS idx_pkg_ip ON packages(uploader_ip);
+                """
+            )
             con.commit()
         finally:
             con.close()
@@ -75,6 +90,7 @@ def create_package(
     uploader: str = "",
     source: str = "web",
     max_extracts: int = 0,
+    uploader_ip: str = "",
 ) -> int:
     with _lock:
         con = _conn()
@@ -82,9 +98,10 @@ def create_package(
             cur = con.execute(
                 """
                 INSERT INTO packages (
-                    extract_code, title, created_at, expire_at, uploader, source, max_extracts
+                    extract_code, title, created_at, expire_at, uploader, source,
+                    max_extracts, uploader_ip
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     extract_code,
@@ -94,6 +111,7 @@ def create_package(
                     uploader,
                     source,
                     int(max_extracts or 0),
+                    (uploader_ip or "").strip(),
                 ),
             )
             con.commit()
@@ -263,5 +281,85 @@ def mark_expired(package_id: int) -> None:
                 "UPDATE packages SET status = 'expired' WHERE id = ?", (package_id,)
             )
             con.commit()
+        finally:
+            con.close()
+
+
+def is_ip_banned(ip: str) -> Optional[Dict[str, Any]]:
+    ip = (ip or "").strip()
+    if not ip:
+        return None
+    with _lock:
+        con = _conn()
+        try:
+            row = con.execute("SELECT * FROM banned_ips WHERE ip = ?", (ip,)).fetchone()
+            return dict(row) if row else None
+        finally:
+            con.close()
+
+
+def ban_ip(ip: str, reason: str = "", created_by: str = "") -> Dict[str, Any]:
+    ip = (ip or "").strip()
+    if not ip:
+        raise ValueError("empty ip")
+    now = time.time()
+    with _lock:
+        con = _conn()
+        try:
+            con.execute(
+                """
+                INSERT INTO banned_ips (ip, reason, created_at, created_by)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(ip) DO UPDATE SET
+                    reason = excluded.reason,
+                    created_at = excluded.created_at,
+                    created_by = excluded.created_by
+                """,
+                (ip, (reason or "").strip(), now, (created_by or "").strip()),
+            )
+            con.commit()
+            row = con.execute("SELECT * FROM banned_ips WHERE ip = ?", (ip,)).fetchone()
+            return dict(row) if row else {"ip": ip, "reason": reason, "created_at": now}
+        finally:
+            con.close()
+
+
+def unban_ip(ip: str) -> bool:
+    ip = (ip or "").strip()
+    if not ip:
+        return False
+    with _lock:
+        con = _conn()
+        try:
+            cur = con.execute("DELETE FROM banned_ips WHERE ip = ?", (ip,))
+            con.commit()
+            return cur.rowcount > 0
+        finally:
+            con.close()
+
+
+def list_banned_ips() -> List[Dict[str, Any]]:
+    with _lock:
+        con = _conn()
+        try:
+            rows = con.execute(
+                "SELECT * FROM banned_ips ORDER BY created_at DESC"
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            con.close()
+
+
+def count_packages_by_ip(ip: str) -> int:
+    ip = (ip or "").strip()
+    if not ip:
+        return 0
+    with _lock:
+        con = _conn()
+        try:
+            row = con.execute(
+                "SELECT COUNT(*) AS n FROM packages WHERE uploader_ip = ?", (ip,)
+            ).fetchone()
+            return int(row["n"]) if row else 0
         finally:
             con.close()

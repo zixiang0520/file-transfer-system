@@ -224,8 +224,9 @@ systemctl restart file-transfer-system
 2. 不要把 `data/config.json` 提交 Git / 打进镜像
 3. 公网用 HTTPS 反代；防火墙只放行 80/443 或指定端口
 4. 按需收紧扩展名、单文件大小、最长有效期
-5. 云盘鉴权只用后台配置（Cookie+账密 或 Authorization），勿明文进仓库
-6. 根目录可用显示路径 `/文件流转`（自动解析 parentFileId）
+5. 发现危险文件：后台包裹点「封禁 IP」，该 IP 无法再上传
+6. 云盘鉴权只用后台配置（Cookie+账密 或 Authorization），勿明文进仓库
+7. 根目录可用显示路径 `/文件流转`（自动解析 parentFileId）
 
 ## 12. 故障排查
 | 现象 | 处理 |
