@@ -110,6 +110,19 @@
         <i class="fa-solid fa-upload"></i>
         立即上传（生成提取码）
       </button>
+      <div id="progressWrap" class="hidden bg-zinc-900 rounded-2xl sm:rounded-3xl p-4 sm:p-5 space-y-3">
+        <div class="flex items-center justify-between gap-3 text-sm">
+          <span id="progressLabel" class="text-zinc-300">准备上传…</span>
+          <span id="progressPct" class="font-mono text-violet-300 tabular-nums">0%</span>
+        </div>
+        <div class="h-3 bg-zinc-800 rounded-full overflow-hidden">
+          <div id="progressBar" class="h-full w-0 bg-gradient-to-r from-violet-600 to-fuchsia-500 rounded-full transition-[width] duration-150"></div>
+        </div>
+        <div class="flex flex-wrap justify-between gap-2 text-xs text-zinc-500">
+          <span id="progressBytes">0 / 0</span>
+          <span id="progressSpeed"></span>
+        </div>
+      </div>
     </div>
 
     <!-- Result -->
@@ -186,6 +199,31 @@
       if (confirm('确定清空所有文件？')) { selectedFiles = []; renderFileList(); }
     }
 
+    function fmtBytes(n){
+      n=Number(n)||0;
+      if(n<1024) return n+' B';
+      if(n<1048576) return (n/1024).toFixed(1)+' KB';
+      if(n<1073741824) return (n/1048576).toFixed(1)+' MB';
+      return (n/1073741824).toFixed(2)+' GB';
+    }
+    function fmtEta(sec){
+      sec=Math.max(0, Math.round(sec||0));
+      if(sec<60) return sec+' 秒';
+      const m=Math.floor(sec/60), s=sec%60;
+      if(m<60) return m+' 分 '+s+' 秒';
+      return Math.floor(m/60)+' 时 '+(m%60)+' 分';
+    }
+    function setProgress(pct, label, loaded, total, speed){
+      const wrap=document.getElementById('progressWrap');
+      wrap.classList.remove('hidden');
+      pct=Math.max(0, Math.min(100, pct||0));
+      document.getElementById('progressBar').style.width=pct.toFixed(1)+'%';
+      document.getElementById('progressPct').textContent=pct.toFixed(1)+'%';
+      if(label) document.getElementById('progressLabel').textContent=label;
+      if(total!=null) document.getElementById('progressBytes').textContent=fmtBytes(loaded||0)+' / '+fmtBytes(total);
+      document.getElementById('progressSpeed').textContent=speed||'';
+    }
+
     function uploadFiles() {
       if (selectedFiles.length === 0) return;
       const formData = new FormData();
@@ -205,18 +243,55 @@
       const oldHtml = btn.innerHTML;
       btn.disabled = true;
       btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 上传中…';
+      const totalSize = selectedFiles.reduce((s,f)=>s+(f.size||0),0);
+      setProgress(0, '正在发送到服务器…', 0, totalSize, '');
 
-      fetch('/api/upload', { method: 'POST', body: formData })
-        .then(r => r.json())
-        .then(data => {
-          if (data.error) { alert(data.error); btn.disabled = false; btn.innerHTML = oldHtml; return; }
-          selectedFiles = [];
-          showResult(data);
-        })
-        .catch(err => {
-          alert('上传失败：' + err.message);
-          btn.disabled = false; btn.innerHTML = oldHtml;
-        });
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/api/upload');
+      xhr.timeout = 0;
+      let lastLoaded=0, lastTs=Date.now();
+      xhr.upload.onprogress = (e) => {
+        if(!e.lengthComputable) return;
+        const now=Date.now();
+        const dt=Math.max(1, now-lastTs)/1000;
+        const speed=(e.loaded-lastLoaded)/dt;
+        lastLoaded=e.loaded; lastTs=now;
+        const pct=e.total? (e.loaded/e.total*100) : 0;
+        const remain=speed>0 ? (e.total-e.loaded)/speed : 0;
+        const spdTxt=fmtBytes(speed)+'/s'+(remain>0 && pct<99.5 ? ' · 剩余 '+fmtEta(remain) : '');
+        setProgress(pct, '正在上传到服务器…', e.loaded, e.total, spdTxt);
+      };
+      xhr.upload.onload = () => {
+        setProgress(100, '已传到服务器，正在写入云盘…', totalSize, totalSize, '请稍候，大文件分片上传可能较久');
+        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 云盘处理中…';
+      };
+      xhr.onerror = () => {
+        alert('上传失败：网络中断');
+        btn.disabled=false; btn.innerHTML=oldHtml;
+        document.getElementById('progressWrap').classList.add('hidden');
+      };
+      xhr.ontimeout = () => {
+        alert('上传超时');
+        btn.disabled=false; btn.innerHTML=oldHtml;
+        document.getElementById('progressWrap').classList.add('hidden');
+      };
+      xhr.onabort = () => {
+        btn.disabled=false; btn.innerHTML=oldHtml;
+        document.getElementById('progressWrap').classList.add('hidden');
+      };
+      xhr.onload = () => {
+        let data={};
+        try { data=JSON.parse(xhr.responseText||'{}'); } catch(e) { data={error:'服务器返回无效'}; }
+        if (xhr.status>=400 || data.error) {
+          alert(data.error || data.detail || ('上传失败 HTTP '+xhr.status));
+          btn.disabled=false; btn.innerHTML=oldHtml;
+          document.getElementById('progressWrap').classList.add('hidden');
+          return;
+        }
+        selectedFiles = [];
+        showResult(data);
+      };
+      xhr.send(formData);
     }
 
     function showResult(data) {
