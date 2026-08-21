@@ -497,9 +497,13 @@
         linkBox = document.createElement('div');
         linkBox.id = 'extractLinkBox';
         linkBox.className = 'mt-4 text-sm break-all text-zinc-400';
-        document.getElementById('resultPanel').insertBefore(
-          linkBox, document.getElementById('resultPanel').querySelector('button')
-        );
+        const panel = document.getElementById('resultPanel');
+        let refBtn = null;
+        for (const child of panel.children) {
+          if (child.tagName === 'BUTTON') { refBtn = child; break; }
+        }
+        if (refBtn) panel.insertBefore(linkBox, refBtn);
+        else panel.appendChild(linkBox);
       }
       const url = data.extract_url || (`/extract?code=${data.extract_code}`);
       linkBox.innerHTML = `提取页：<a class="text-violet-400 underline" href="${url}">${url}</a>`;
