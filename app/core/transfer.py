@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import io
+import json
+import logging
 import re
 import secrets
 import time
@@ -12,6 +14,8 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from app import db
 from app.config_store import load_config
 from app.core import storage as store
+
+logger = logging.getLogger("fts.transfer")
 
 
 class TransferError(Exception):
@@ -232,6 +236,11 @@ def init_direct_upload(
             }
         )
 
+    logger.info(
+        "direct-upload init: pkg files=%s",
+        json.dumps(prepared, ensure_ascii=False)[:800],
+    )
+
     hours = expire_hours
     if hours is None:
         hours = float(up.get("default_expire_hours") or 72)
@@ -315,6 +324,25 @@ def complete_direct_upload(
     """Finalize a direct upload: complete 139 tasks and record files in DB."""
     saved: List[Dict[str, Any]] = []
     try:
+        logger.info(
+            "direct-upload complete: pkg=%s files=%s",
+            package_id,
+            json.dumps(
+                [
+                    {
+                        "name": f.get("name"),
+                        "size": f.get("size"),
+                        "sha256": (f.get("sha256") or "")[:16],
+                        "file_id": f.get("file_id"),
+                        "upload_id": f.get("upload_id"),
+                        "exist": f.get("exist"),
+                        "rapid": f.get("rapid"),
+                    }
+                    for f in files
+                ],
+                ensure_ascii=False,
+            ),
+        )
         for fm in files:
             file_id = str(fm.get("file_id") or "")
             upload_id = str(fm.get("upload_id") or "")
@@ -361,7 +389,9 @@ def complete_direct_upload(
         except Exception:
             pass
         if isinstance(e, TransferError):
+            logger.warning("direct-upload complete failed (TransferError): %s", e)
             raise
+        logger.warning("direct-upload complete failed: %s", e)
         raise TransferError(f"完成上传失败: {e}", 502)
 
     return {

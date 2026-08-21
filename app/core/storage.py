@@ -217,11 +217,14 @@ class Yun139Client:
             self.ensure_auth(force_login=True)
             return self.personal_post(pathname, data, _retried=True)
         if r.status_code >= 400:
+            logger.warning("yun139 %s HTTP %s: %s", pathname, r.status_code, r.text[:400])
             raise StorageError(j.get("message") or f"HTTP {r.status_code}", r.status_code)
         if j.get("success") is False:
+            logger.warning("yun139 %s success=false: %s", pathname, r.text[:400])
             raise StorageError(j.get("message") or j.get("code") or "云盘请求失败", 502)
         if code and code not in ("0000", "0", "success"):
             if not j.get("success", True) and not j.get("data"):
+                logger.warning("yun139 %s biz err %s: %s", pathname, code, r.text[:400])
                 raise StorageError(j.get("message") or code, 502)
         return j
 
