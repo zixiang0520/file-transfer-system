@@ -681,3 +681,21 @@ def delete_file(backend: str, storage_path: str, remote_id: str = "") -> None:
             pass
         return
     Yun139Client().delete_file(fid)
+
+
+def put_part(upload_url: str, content, part_size: int) -> None:
+    """Stream a single part to a 139 presigned URL (server-relayed pipeline)."""
+    import httpx
+    with httpx.Client(timeout=httpx.Timeout(600.0, connect=20.0)) as client:
+        r = client.put(
+            upload_url,
+            content=content,
+            headers={
+                "Content-Type": "application/octet-stream",
+                "Content-Length": str(part_size),
+                "Origin": "https://yun.139.com",
+                "Referer": "https://yun.139.com/",
+            },
+        )
+        if r.status_code not in (200, 201):
+            raise StorageError(f"分片上传失败 HTTP {r.status_code}: {r.text[:200]}", 502)

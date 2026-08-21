@@ -239,6 +239,102 @@
       return [h0,h1,h2,h3,h4,h5,h6,h7].map(x => (x >>> 0).toString(16).padStart(8, '0')).join('');
     }
 
+    // --- Web Worker 后台 SHA-256（流式分块，大文件不卡主线程）---
+    const shaWorkerSrc = `
+      const K = [0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2];
+      function makeHasher() {
+        let h0=0x6a09e667,h1=0xbb67ae85,h2=0x3c6ef372,h3=0xa54ff53a,h4=0x510e527f,h5=0x9b05688c,h6=0x1f83d9ab,h7=0x5be0cd19;
+        let buf = new Uint8Array(0), total = 0;
+        const rotr = (x,n) => (x >>> n) | (x << (32 - n));
+        const w = new Int32Array(64);
+        function compress(bytes) {
+          const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+          for (let off = 0; off < bytes.byteLength; off += 64) {
+            for (let i = 0; i < 16; i++) w[i] = dv.getInt32(off + i * 4, false);
+            for (let i = 16; i < 64; i++) {
+              const s0 = rotr(w[i-15],7) ^ rotr(w[i-15],18) ^ (w[i-15]>>>3);
+              const s1 = rotr(w[i-2],17) ^ rotr(w[i-2],19) ^ (w[i-2]>>>10);
+              w[i] = (w[i-16] + s0 + w[i-7] + s1) | 0;
+            }
+            let a=h0,b=h1,c=h2,d=h3,e=h4,f=h5,g=h6,h=h7;
+            for (let i = 0; i < 64; i++) {
+              const S1 = rotr(e,6) ^ rotr(e,11) ^ rotr(e,25);
+              const ch = (e & f) ^ ((~e) & g);
+              const t1 = (h + S1 + ch + K[i] + w[i]) | 0;
+              const S0 = rotr(a,2) ^ rotr(a,13) ^ rotr(a,22);
+              const maj = (a & b) ^ (a & c) ^ (b & c);
+              const t2 = (S0 + maj) | 0;
+              h=g; g=f; f=e; e=(d+t1)|0; d=c; c=b; b=a; a=(t1+t2)|0;
+            }
+            h0=(h0+a)|0; h1=(h1+b)|0; h2=(h2+c)|0; h3=(h3+d)|0;
+            h4=(h4+e)|0; h5=(h5+f)|0; h6=(h6+g)|0; h7=(h7+h)|0;
+          }
+        }
+        return {
+          update(bytes) {
+            total += bytes.length;
+            if (buf.length > 0) {
+              const merged = new Uint8Array(buf.length + bytes.length);
+              merged.set(buf); merged.set(bytes, buf.length);
+              bytes = merged;
+            }
+            const whole = bytes.length - (bytes.length % 64);
+            if (whole > 0) {
+              compress(new Uint8Array(bytes.buffer, bytes.byteOffset, whole));
+            }
+            buf = bytes.length % 64 > 0 ? bytes.slice(bytes.length - (bytes.length % 64)) : new Uint8Array(0);
+          },
+          digestHex() {
+            // 分块场景：完整块已在 update 阶段压缩，这里只需为残留 buf 补 padding
+            const bitLen = total * 8;
+            const padLen = ((buf.length + 8) >> 6 << 6) + 64;
+            const padded = new Uint8Array(padLen);
+            padded.set(buf);
+            padded[buf.length] = 0x80;
+            const dv = new DataView(padded.buffer);
+            dv.setUint32(padLen - 8, Math.floor(bitLen / 0x100000000), false);
+            dv.setUint32(padLen - 4, bitLen >>> 0, false);
+            compress(padded);
+            const out = [h0>>>0,h1>>>0,h2>>>0,h3>>>0,h4>>>0,h5>>>0,h6>>>0,h7>>>0];
+            return out.map(x => ('00000000' + x.toString(16)).slice(-8)).join('');
+          }
+        };
+      }
+      self.onmessage = async (e) => {
+        const { id, file, chunkSize } = e.data;
+        try {
+          const hasher = makeHasher();
+          const total = file.size;
+          let offset = 0;
+          while (offset < total) {
+            const end = Math.min(offset + chunkSize, total);
+            const buf = await file.slice(offset, end).arrayBuffer();
+            hasher.update(new Uint8Array(buf));
+            offset = end;
+            self.postMessage({ type: 'progress', id, loaded: offset, total });
+          }
+          self.postMessage({ type: 'done', id, sha: hasher.digestHex() });
+        } catch (err) {
+          self.postMessage({ type: 'error', id, message: String(err && err.message || err) });
+        }
+      };
+    `;
+    function sha256FileAsync(file, onProgress) {
+      return new Promise((resolve, reject) => {
+        let worker;
+        try {
+          worker = new Worker(URL.createObjectURL(new Blob([shaWorkerSrc], { type: 'application/javascript' })));
+        } catch (e) { reject(e); return; }
+        worker.onmessage = (e) => {
+          if (e.data.type === 'progress') { if (onProgress) onProgress(e.data.loaded, e.data.total); }
+          else if (e.data.type === 'done') { worker.terminate(); resolve(e.data.sha); }
+          else if (e.data.type === 'error') { worker.terminate(); reject(new Error(e.data.message)); }
+        };
+        worker.onerror = () => { worker.terminate(); reject(new Error('校验值计算 Worker 出错')); };
+        worker.postMessage({ id: 0, file: file, chunkSize: 4 * 1024 * 1024 });
+      });
+    }
+
     function handleFiles(files) {
       for (let f of files) {
         if (!selectedFiles.some(x => x.name === f.name && x.size === f.size)) selectedFiles.push(f);
@@ -301,31 +397,124 @@
       document.getElementById('progressSpeed').textContent=speed||'';
     }
 
-    // 大文件走服务器中转上传（绕过浏览器→云盘直传可能被网络损坏的路径）
-    // 中转 = 浏览器 → NAS → 云盘，NAS→云盘这条路径已验证 100% 可靠
-    function uploadViaProxy(expireHours, maxExt, totalSize) {
-      return new Promise((resolve, reject) => {
-        const formData = new FormData();
-        for (const f of selectedFiles) formData.append('files', f, f.name);
-        if (expireHours) formData.append('expire_hours', String(expireHours));
-        if (maxExt) formData.append('max_extracts', String(maxExt));
-        const xhr = new XMLHttpRequest();
-        xhr.open('POST', '/api/upload');
-        xhr.upload.onprogress = (e) => {
-          if (e.lengthComputable && totalSize > 0) {
-            const pct = (e.loaded / totalSize) * 100;
-            setProgress(pct, '上传中（服务器中转，比直传稍慢）…', e.loaded, totalSize, '');
+    // 大文件走"流水线分片中转"：浏览器一片片传 NAS，NAS 收到一片立刻转 139，不等全部收完
+    // 浏览器用 Worker 后台算 sha（不卡页面），按 init 返回的 partSize 切片，在途 2 片并发
+    function uploadPipeline(expireHours, maxExt, totalSize) {
+      return new Promise(async (resolve, reject) => {
+        let initData = null;
+        try {
+          // 1) Worker 后台逐个算 SHA256
+          const filesMeta = [];
+          for (let fi = 0; fi < selectedFiles.length; fi++) {
+            const f = selectedFiles[fi];
+            setProgress(0, '正在计算 ' + f.name + ' 的校验值（后台计算）…', 0, totalSize, '');
+            const sha = await sha256FileAsync(f, (loaded, total) => {
+              const pct = total ? (loaded / total * 100) : 0;
+              setProgress(pct, '正在计算 ' + f.name + ' 的校验值…', loaded, total, '');
+            });
+            filesMeta.push({ name: f.name, size: f.size, sha256: sha, content_type: f.type || 'application/octet-stream' });
           }
-        };
-        xhr.onload = () => {
+
+          // 2) init：创建 139 上传任务（复用直传接口）
+          setProgress(0, '正在创建上传任务…', 0, totalSize, '');
+          const initResp = await fetch('/api/direct-upload/init', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ title: '', expire_hours: expireHours, max_extracts: maxExt, files: filesMeta })
+          });
+          initData = await initResp.json().catch(() => ({}));
+          if (!initResp.ok || !initData || initData.error) {
+            throw new Error((initData && initData.error) || ('创建上传任务失败 HTTP ' + initResp.status));
+          }
+
+          // 3) 切片 + 流水线并发上传（在途 2 片，NAS 边收边转）
+          const parts = [];
+          for (const fm of initData.files || []) {
+            const fileObj = selectedFiles.find(f => f.name === fm.name && f.size === fm.size);
+            let off = 0;
+            for (const p of (fm.parts || [])) {
+              parts.push({
+                fileObj: fileObj,
+                fm: fm,
+                part: { number: p.partNumber, size: p.partSize, url: p.uploadUrl || '', offset: off }
+              });
+              off += p.partSize;
+            }
+          }
+          let doneBytes = 0;
+          const uploadOne = (item) => new Promise((res, rej) => {
+            const chunk = item.fileObj.slice(item.part.offset, item.part.offset + item.part.size);
+            const fd = new FormData();
+            fd.append('file_id', item.fm.file_id);
+            fd.append('part_number', String(item.part.number));
+            fd.append('part_size', String(item.part.size));
+            fd.append('upload_url', item.part.url);
+            fd.append('chunk', chunk, 'part.bin');
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', '/api/pipeline-upload/part');
+            xhr.upload.onprogress = (e) => {
+              if (e.lengthComputable) {
+                const done = Math.min(doneBytes + e.loaded, totalSize);
+                setProgress(totalSize ? (done / totalSize * 100) : 0, '上传中（NAS 边收边转）…', done, totalSize, '');
+              }
+            };
+            xhr.onload = () => {
+              if (xhr.status >= 200 && xhr.status < 300) { doneBytes += item.part.size; res(); }
+              else {
+                let msg = '分片 ' + item.part.number + ' 上传失败 HTTP ' + xhr.status;
+                try { const r = JSON.parse(xhr.responseText); if (r.error) msg = r.error; } catch (e) {}
+                rej(new Error(msg));
+              }
+            };
+            xhr.onerror = () => rej(new Error('分片 ' + item.part.number + ' 网络错误，请重试'));
+            xhr.send(fd);
+          });
+          let next = 0;
+          const worker = async () => {
+            while (next < parts.length) {
+              const item = parts[next++];
+              let lastErr = null;
+              for (let attempt = 0; attempt < 3; attempt++) {
+                try { await uploadOne(item); lastErr = null; break; }
+                catch (e) { lastErr = e; await new Promise(r => setTimeout(r, 600 * (attempt + 1))); }
+              }
+              if (lastErr) throw lastErr;
+            }
+          };
+          const concurrency = 1; // 139 要求分片严格按序上传，浏览器顺序发片（每片等 NAS 入队确认）；NAS 后台按序转 139，边收边转
+          await Promise.all(Array.from({ length: concurrency }, worker));
+
+          // 4) complete（等 NAS 后台把队列片全部转完 139）
+          setProgress(99, '正在完成上传…', totalSize, totalSize, '');
+          const compResp = await fetch('/api/pipeline-upload/complete', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+              package_id: initData.package_id,
+              files: (initData.files || []).map(fm => ({
+                name: fm.name, size: fm.size, sha256: fm.sha256, content_type: fm.content_type,
+                file_id: fm.file_id, upload_id: fm.upload_id, exist: fm.exist, rapid: fm.rapid, file_name: fm.file_name
+              }))
+            })
+          });
+          const compData = await compResp.json().catch(() => ({}));
+          if (!compResp.ok || !compData || compData.error) {
+            throw new Error((compData && compData.error) || ('完成上传失败 HTTP ' + compResp.status));
+          }
+          resolve(compData);
+        } catch (err) {
+          // 清理半成品（139 未完成文件 + 数据库包）
           try {
-            const r = JSON.parse(xhr.responseText);
-            if (r && r.error) reject(new Error(r.error));
-            else resolve(r);
-          } catch (err) { reject(err); }
-        };
-        xhr.onerror = () => reject(new Error('网络错误，请重试'));
-        xhr.send(formData);
+            if (initData && initData.package_id) {
+              await fetch('/api/direct-upload/cancel', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ package_id: initData.package_id, files: initData.files || [] })
+              });
+            }
+          } catch (e) {}
+          reject(err);
+        }
       });
     }
 
@@ -350,11 +539,11 @@
       let maxExt = parseInt(document.getElementById('maxExtracts').value, 10);
       if (isNaN(maxExt) || maxExt < 0) maxExt = 0;
 
-      // 大文件（>10MB）走服务器中转，绕开直传损坏路径
+      // 大文件（>10MB）走流水线分片中转，绕开直传损坏路径
       if (totalSize > 10 * 1024 * 1024) {
-        setProgress(0, '开始上传（服务器中转）…', 0, totalSize, '');
+        setProgress(0, '开始上传（流水线分片）…', 0, totalSize, '');
         try {
-          const r = await uploadViaProxy(expireHours, maxExt, totalSize);
+          const r = await uploadPipeline(expireHours, maxExt, totalSize);
           selectedFiles = [];
           shaCache.clear(); shaCacheBytes = 0;
           showResult(r);

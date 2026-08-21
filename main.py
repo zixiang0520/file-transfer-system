@@ -1,8 +1,11 @@
 """File Transfer System - FastAPI entry."""
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import logging
+import os
+import shutil
 import threading
 import time
 from pathlib import Path
@@ -53,6 +56,52 @@ app.add_middleware(
     secret_key=cfg0.get("session_secret") or "fts-dev-secret",
     max_age=7 * 24 * 3600,
 )
+
+# ---- 流水线分片中转状态（浏览器一片片传 NAS，NAS 后台按序转 139）----
+# 139 要求分片严格按序上传（InvalidPartOrder），所以浏览器顺序发片（在途 1），
+# part 接口收片后立即返回 200（入队），后台 worker 按队列顺序转发 139，
+# 这样 NAS 转片 N 时浏览器已经在传片 N+1，实现"边收边转"流水线。
+PIPELINE_DIR = Path("/tmp/pipeline")
+_pipeline_state: dict = {}  # file_id -> {"queue", "worker", "dir", "pending", "error"}
+
+
+def _pipeline_get(file_id: str) -> dict:
+    st = _pipeline_state.get(file_id)
+    if st is None:
+        st = {
+            "queue": asyncio.Queue(),
+            "worker": None,
+            "dir": None,
+            "pending": 0,
+            "error": None,
+        }
+        _pipeline_state[file_id] = st
+    return st
+
+
+async def _pipeline_worker(file_id: str) -> None:
+    st = _pipeline_state.get(file_id)
+    if not st:
+        return
+    try:
+        while True:
+            item = await st["queue"].get()
+            try:
+                with open(item["path"], "rb") as f:
+                    store.put_part(item["upload_url"], f, item["part_size"])
+            except Exception as e:
+                st["error"] = str(e)
+                logger.error("pipeline worker part %s failed: %s", item.get("part_number"), e)
+            finally:
+                try:
+                    os.unlink(item["path"])
+                except Exception:
+                    pass
+                st["pending"] -= 1
+                if st["queue"].empty() and st["pending"] <= 0:
+                    break
+    except Exception as e:
+        st["error"] = str(e)
 
 if STATIC.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
@@ -386,6 +435,13 @@ async def api_direct_upload_cancel(request: Request):
         for fm in body.get("files") or []:
             fid = str(fm.get("file_id") or "")
             if fid:
+                # 清理流水线状态与临时目录
+                st = _pipeline_state.pop(fid, None)
+                if st:
+                    if st["worker"] is not None and not st["worker"].done():
+                        st["worker"].cancel()
+                    if st["dir"] is not None:
+                        shutil.rmtree(st["dir"], ignore_errors=True)
                 try:
                     store.delete_file("yun139", f"yun139://{fid}", fid)
                 except Exception:
@@ -399,6 +455,90 @@ async def api_direct_upload_cancel(request: Request):
     except Exception as e:
         logger.exception("direct upload cancel failed")
         return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/pipeline-upload/part")
+async def api_pipeline_upload_part(
+    file_id: str = Form(...),
+    part_number: int = Form(...),
+    part_size: int = Form(...),
+    upload_url: str = Form(""),
+    chunk: UploadFile = File(...),
+):
+    """流水线分片中转：浏览器一片片 POST 到 NAS，NAS 收片入队立即返回 200，
+    后台 worker 按序转发 139（139 要求分片顺序上传），不等全部收完。
+    """
+    try:
+        if not upload_url:
+            raise TransferError("缺少分片上传地址", 400)
+        st = _pipeline_get(file_id)
+        if st["error"]:
+            raise TransferError(f"流水线上传已失败：{st['error']}", 502)
+        d = st["dir"]
+        if d is None:
+            d = PIPELINE_DIR / str(int(time.time() * 1000)) / file_id
+            d.mkdir(parents=True, exist_ok=True)
+            st["dir"] = d
+        part_path = d / f"part_{part_number}"
+        with open(part_path, "wb") as f:
+            while True:
+                data = await chunk.read(1024 * 1024)
+                if not data:
+                    break
+                f.write(data)
+        st["pending"] += 1
+        await st["queue"].put(
+            {
+                "part_number": part_number,
+                "path": str(part_path),
+                "upload_url": upload_url,
+                "part_size": part_size,
+            }
+        )
+        if st["worker"] is None or st["worker"].done():
+            st["worker"] = asyncio.create_task(_pipeline_worker(file_id))
+        logger.info(
+            "pipeline part queued: file_id=%s part=%s size=%s pending=%s",
+            file_id, part_number, part_size, st["pending"],
+        )
+        return {"ok": True, "part_number": part_number, "queued": True}
+    except TransferError as e:
+        return JSONResponse({"error": e.message}, status_code=e.code)
+    except Exception as e:
+        logger.exception("pipeline part upload failed")
+        return JSONResponse({"error": str(e)}, status_code=502)
+
+
+@app.post("/api/pipeline-upload/complete")
+async def api_pipeline_upload_complete(request: Request):
+    """等 NAS 后台把队列里的片全部转完 139，再完成直传收尾（139 complete + 建包）。"""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "需要 JSON 请求体"}, status_code=400)
+    try:
+        package_id = int(body.get("package_id") or 0)
+        files = body.get("files") or []
+        for fm in files:
+            fid = str(fm.get("file_id") or "")
+            st = _pipeline_state.get(fid)
+            if st:
+                while st["pending"] > 0:
+                    await asyncio.sleep(0.3)
+                if st["error"]:
+                    err = st["error"]
+                    raise TransferError(f"分片上传失败：{err}", 502)
+                # 清理状态与临时目录
+                if st["dir"] is not None:
+                    shutil.rmtree(st["dir"], ignore_errors=True)
+                _pipeline_state.pop(fid, None)
+        result = complete_direct_upload(package_id=package_id, files=files)
+        return result
+    except TransferError as e:
+        return JSONResponse({"error": e.message}, status_code=e.code)
+    except Exception as e:
+        logger.exception("pipeline complete failed")
+        return JSONResponse({"error": str(e)}, status_code=502)
 
 
 @app.get("/api/package/{code}")
