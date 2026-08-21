@@ -17,7 +17,7 @@ import random
 import string
 import time
 import urllib.parse
-from typing import BinaryIO, Dict, Iterator, Optional, Tuple
+from typing import Any, BinaryIO, Dict, Iterator, Optional, Tuple
 
 import httpx
 
@@ -384,6 +384,75 @@ class Yun139Client:
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
+    def create_upload_task(self, name: str, size: int, sha256: str) -> Dict[str, Any]:
+        """Create a 139 upload task and return presigned part URLs so the browser
+        can PUT parts directly to the cloud (no server relay)."""
+        self.require()
+        parent = self.resolve_parent_id(self.root, auto_create=True)
+        self._persist_resolved(parent)
+        part_size = PART_SIZE
+        n_parts = max(1, (size + part_size - 1) // part_size)
+        part_infos = []
+        for i in range(n_parts):
+            start = i * part_size
+            byte_size = min(size - start, part_size)
+            part_infos.append(
+                {
+                    "partNumber": i + 1,
+                    "partSize": byte_size,
+                    "parallelHashCtx": {"partOffset": start},
+                }
+            )
+        first = part_infos[:100]
+        create_body = {
+            "contentHash": sha256,
+            "contentHashAlgorithm": "SHA256",
+            "contentType": "application/octet-stream",
+            "parallelUpload": False,
+            "partInfos": first,
+            "size": size,
+            "parentFileId": parent,
+            "name": name,
+            "type": "file",
+            "fileRenameMode": "auto_rename",
+        }
+        resp = self.personal_post("/file/create", create_body)
+        data = resp.get("data") or {}
+        file_id = data.get("fileId") or ""
+        upload_id = data.get("uploadId") or ""
+        parts = []
+        for up in data.get("partInfos") or []:
+            parts.append(
+                {
+                    "partNumber": up.get("partNumber"),
+                    "partSize": up.get("partSize"),
+                    "uploadUrl": up.get("uploadUrl") or up.get("cdnUploadUrl") or "",
+                }
+            )
+        return {
+            "file_id": file_id,
+            "upload_id": upload_id,
+            "exist": bool(data.get("exist") and file_id),
+            "file_name": data.get("fileName") or name,
+            "part_size": part_size,
+            "size": size,
+            "sha256": sha256,
+            "parts": parts,
+        }
+
+    def complete_upload(self, file_id: str, upload_id: str, sha256: str) -> None:
+        """Finalize a 139 upload after all parts have been PUT by the client."""
+        self.require()
+        self.personal_post(
+            "/file/complete",
+            {
+                "contentHash": sha256,
+                "contentHashAlgorithm": "SHA256",
+                "fileId": file_id,
+                "uploadId": upload_id,
+            },
+        )
+
     def upload_bytes(self, content: bytes, name: str) -> Dict[str, str]:
         """Upload file content to 139 personal cloud. Returns meta with remote_id."""
         self.require()
@@ -565,6 +634,18 @@ def save_file(fileobj: BinaryIO, original_name: str) -> Dict[str, str]:
     if isinstance(data, memoryview):
         data = data.tobytes()
     return yun.upload_bytes(data, original_name)
+
+
+def create_upload_task(name: str, size: int, sha256: str) -> Dict[str, Any]:
+    """Module-level wrapper: create 139 upload task with presigned part URLs."""
+    yun = Yun139Client()
+    return yun.create_upload_task(name, size, sha256)
+
+
+def complete_upload(file_id: str, upload_id: str, sha256: str) -> None:
+    """Module-level wrapper: finalize a direct 139 upload."""
+    yun = Yun139Client()
+    yun.complete_upload(file_id, upload_id, sha256)
 
 
 def open_file_bytes(storage_path: str, remote_id: str = "") -> bytes:

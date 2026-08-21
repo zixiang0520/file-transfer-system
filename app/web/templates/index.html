@@ -162,6 +162,53 @@
   <script>
     let selectedFiles = [];
 
+    // --- 纯 JS SHA-256（HTTP 环境无 crypto.subtle，故自实现）---
+    function sha256Hex(blob) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = () => reject(reader.error || new Error('读取文件失败'));
+        reader.onload = () => {
+          try { resolve(sha256Bytes(new Uint8Array(reader.result))); }
+          catch (e) { reject(e); }
+        };
+        reader.readAsArrayBuffer(blob);
+      });
+    }
+    function sha256Bytes(bytes) {
+      const K = [0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2];
+      let h0=0x6a09e667,h1=0xbb67ae85,h2=0x3c6ef372,h3=0xa54ff53a,h4=0x510e527f,h5=0x9b05688c,h6=0x1f83d9ab,h7=0x5be0cd19;
+      const l = bytes.length, bitLen = l * 8;
+      const withPad = Math.ceil((l + 9) / 64) * 64;
+      const padded = new Uint8Array(withPad);
+      padded.set(bytes);
+      padded[l] = 0x80;
+      const dv = new DataView(padded.buffer);
+      dv.setUint32(withPad - 8, Math.floor(bitLen / 0x100000000), false);
+      dv.setUint32(withPad - 4, bitLen >>> 0, false);
+      const w = new Int32Array(64);
+      const rotr = (x, n) => (x >>> n) | (x << (32 - n));
+      for (let off = 0; off < withPad; off += 64) {
+        for (let i = 0; i < 16; i++) w[i] = dv.getInt32(off + i * 4, false);
+        for (let i = 16; i < 64; i++) {
+          const s0 = rotr(w[i-15],7) ^ rotr(w[i-15],18) ^ (w[i-15]>>>3);
+          const s1 = rotr(w[i-2],17) ^ rotr(w[i-2],19) ^ (w[i-2]>>>10);
+          w[i] = (w[i-16] + s0 + w[i-7] + s1) | 0;
+        }
+        let a=h0,b=h1,c=h2,d=h3,e=h4,f=h5,g=h6,h=h7;
+        for (let i = 0; i < 64; i++) {
+          const S1 = rotr(e,6) ^ rotr(e,11) ^ rotr(e,25);
+          const ch = (e & f) ^ ((~e) & g);
+          const t1 = (h + S1 + ch + K[i] + w[i]) | 0;
+          const S0 = rotr(a,2) ^ rotr(a,13) ^ rotr(a,22);
+          const maj = (a & b) ^ (a & c) ^ (b & c);
+          const t2 = (S0 + maj) | 0;
+          h=g; g=f; f=e; e=(d+t1)|0; d=c; c=b; b=a; a=(t1+t2)|0;
+        }
+        h0=(h0+a)|0; h1=(h1+b)|0; h2=(h2+c)|0; h3=(h3+d)|0; h4=(h4+e)|0; h5=(h5+f)|0; h6=(h6+g)|0; h7=(h7+h)|0;
+      }
+      return [h0,h1,h2,h3,h4,h5,h6,h7].map(x => (x >>> 0).toString(16).padStart(8, '0')).join('');
+    }
+
     function handleFiles(files) {
       for (let f of files) {
         if (!selectedFiles.some(x => x.name === f.name && x.size === f.size)) selectedFiles.push(f);
@@ -224,74 +271,115 @@
       document.getElementById('progressSpeed').textContent=speed||'';
     }
 
-    function uploadFiles() {
+    async function uploadFiles() {
       if (selectedFiles.length === 0) return;
-      const formData = new FormData();
-      selectedFiles.forEach(file => formData.append('files', file));
-      let val = parseFloat(document.getElementById('expireValue').value);
-      if (!val || val < 1) val = 1;
-      const unit = document.getElementById('expireUnit').value;
-      const hours = unit === 'day' ? val * 24 : val;
-      const maxDays = Number(document.getElementById('maxExpireHint').textContent) || 90;
-      if (hours > maxDays * 24) { alert('有效期不能超过 ' + maxDays + ' 天'); return; }
-      formData.append('expire_hours', String(hours));
-      let maxExt = parseInt(document.getElementById('maxExtracts').value, 10);
-      if (isNaN(maxExt) || maxExt < 0) maxExt = 0;
-      formData.append('max_extracts', String(maxExt));
-
       const btn = document.getElementById('btnUpload');
       const oldHtml = btn.innerHTML;
       btn.disabled = true;
-      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 上传中…';
+      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 准备中…';
       const totalSize = selectedFiles.reduce((s,f)=>s+(f.size||0),0);
-      setProgress(0, '正在发送到服务器…', 0, totalSize, '');
+      setProgress(0, '正在计算文件校验值…', 0, totalSize, '');
 
-      const xhr = new XMLHttpRequest();
-      xhr.open('POST', '/api/upload');
-      xhr.timeout = 0;
-      let lastLoaded=0, lastTs=Date.now();
-      xhr.upload.onprogress = (e) => {
-        if(!e.lengthComputable) return;
-        const now=Date.now();
-        const dt=Math.max(1, now-lastTs)/1000;
-        const speed=(e.loaded-lastLoaded)/dt;
-        lastLoaded=e.loaded; lastTs=now;
-        const pct=e.total? (e.loaded/e.total*100) : 0;
-        const remain=speed>0 ? (e.total-e.loaded)/speed : 0;
-        const spdTxt=fmtBytes(speed)+'/s'+(remain>0 && pct<99.5 ? ' · 剩余 '+fmtEta(remain) : '');
-        setProgress(pct, '正在上传到服务器…', e.loaded, e.total, spdTxt);
-      };
-      xhr.upload.onload = () => {
-        setProgress(100, '已传到服务器，正在写入云盘…', totalSize, totalSize, '请稍候，大文件分片上传可能较久');
-        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 云盘处理中…';
-      };
-      xhr.onerror = () => {
-        alert('上传失败：网络中断');
-        btn.disabled=false; btn.innerHTML=oldHtml;
-        document.getElementById('progressWrap').classList.add('hidden');
-      };
-      xhr.ontimeout = () => {
-        alert('上传超时');
-        btn.disabled=false; btn.innerHTML=oldHtml;
-        document.getElementById('progressWrap').classList.add('hidden');
-      };
-      xhr.onabort = () => {
-        btn.disabled=false; btn.innerHTML=oldHtml;
-        document.getElementById('progressWrap').classList.add('hidden');
-      };
-      xhr.onload = () => {
-        let data={};
-        try { data=JSON.parse(xhr.responseText||'{}'); } catch(e) { data={error:'服务器返回无效'}; }
-        if (xhr.status>=400 || data.error) {
-          alert(data.error || data.detail || ('上传失败 HTTP '+xhr.status));
-          btn.disabled=false; btn.innerHTML=oldHtml;
-          document.getElementById('progressWrap').classList.add('hidden');
-          return;
+      let expireHours;
+      {
+        let val = parseFloat(document.getElementById('expireValue').value);
+        if (!val || val < 1) val = 1;
+        const unit = document.getElementById('expireUnit').value;
+        expireHours = unit === 'day' ? val * 24 : val;
+        const maxDays = Number(document.getElementById('maxExpireHint').textContent) || 90;
+        if (expireHours > maxDays * 24) { alert('有效期不能超过 ' + maxDays + ' 天'); return; }
+      }
+      let maxExt = parseInt(document.getElementById('maxExtracts').value, 10);
+      if (isNaN(maxExt) || maxExt < 0) maxExt = 0;
+
+      let initData = null;
+      try {
+        // 1) 逐个计算 SHA256（纯 JS，主线程）
+        const filesMeta = [];
+        for (const f of selectedFiles) {
+          setProgress(0, '正在计算 ' + f.name + ' 的校验值…', 0, totalSize, '大文件可能需要一些时间');
+          const sha = await sha256Hex(f);
+          filesMeta.push({ name: f.name, size: f.size, sha256: sha, content_type: f.type || 'application/octet-stream' });
+        }
+
+        // 2) 创建上传任务（服务器在云盘建任务，返回预签名分片 URL）
+        setProgress(0, '正在创建上传任务…', 0, totalSize, '');
+        const initResp = await fetch('/api/direct-upload/init', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ title: '', expire_hours: expireHours, max_extracts: maxExt, files: filesMeta })
+        });
+        initData = await initResp.json().catch(() => ({}));
+        if (!initResp.ok || initData.error) {
+          throw new Error(initData.error || ('创建上传任务失败 HTTP ' + initResp.status));
+        }
+
+        // 3) 浏览器直传云盘：逐个分片 PUT 到预签名 URL
+        let uploaded = 0, lastLoaded = 0, lastTs = Date.now();
+        for (const fm of initData.files) {
+          if (fm.exist) { uploaded += fm.size; continue; } // 秒传命中，无需上传
+          const file = selectedFiles.find(x => x.name === fm.name && x.size === fm.size);
+          if (!file) throw new Error('找不到本地文件：' + fm.name);
+          const parts = fm.parts || [];
+          for (let i = 0; i < parts.length; i++) {
+            const part = parts[i];
+            const start = (part.partNumber - 1) * part.partSize;
+            const blob = file.slice(start, Math.min(start + part.partSize, file.size));
+            const putResp = await fetch(part.uploadUrl, {
+              method: 'PUT',
+              headers: {'Content-Type': 'application/octet-stream'},
+              body: blob
+            });
+            if (!putResp.ok) throw new Error(fm.name + ' 分片 ' + part.partNumber + ' 上传失败（HTTP ' + putResp.status + '）');
+            uploaded += blob.size;
+            const now = Date.now();
+            const dt = Math.max(1, now - lastTs) / 1000;
+            const speed = (uploaded - lastLoaded) / dt;
+            lastLoaded = uploaded; lastTs = now;
+            const pct = totalSize ? (uploaded / totalSize * 100) : 0;
+            const remain = speed > 0 ? (totalSize - uploaded) / speed : 0;
+            setProgress(pct, '直传云盘：' + fm.name + '（分片 ' + part.partNumber + '/' + parts.length + '）',
+                        uploaded, totalSize, fmtBytes(speed) + '/s' + (remain > 0 && pct < 99.5 ? ' · 剩余 ' + fmtEta(remain) : ''));
+          }
+        }
+
+        // 4) 完成：服务器通知云盘合并分片并登记
+        setProgress(100, '正在完成上传…', totalSize, totalSize, '');
+        const compResp = await fetch('/api/direct-upload/complete', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            package_id: initData.package_id,
+            files: (initData.files || []).map(f => ({
+              name: f.name, size: f.size, sha256: f.sha256, content_type: f.content_type,
+              file_id: f.file_id, upload_id: f.upload_id, file_name: f.file_name, exist: f.exist
+            }))
+          })
+        });
+        const compData = await compResp.json().catch(() => ({}));
+        if (!compResp.ok || compData.error) {
+          throw new Error(compData.error || ('完成上传失败 HTTP ' + compResp.status));
         }
         selectedFiles = [];
-        showResult(data);
-      };
-      xhr.send(formData);
+        showResult(compData);
+      } catch (err) {
+        // 清理已创建但未完成的任务
+        try {
+          if (initData && initData.package_id) {
+            await fetch('/api/direct-upload/cancel', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({
+                package_id: initData.package_id,
+                files: (initData.files || []).map(f => ({ file_id: f.file_id }))
+              })
+            });
+          }
+        } catch (e) {}
+        alert('上传失败：' + (err && err.message ? err.message : err));
+        btn.disabled = false; btn.innerHTML = oldHtml;
+        document.getElementById('progressWrap').classList.add('hidden');
+      }
     }
 
     function showResult(data) {

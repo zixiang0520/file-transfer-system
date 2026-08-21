@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import re
 import secrets
 import time
 import zipfile
@@ -170,6 +171,199 @@ def create_package_with_files(
         "expire_at": expire_at,
         "expire_hours": hours,
         "max_extracts": extracts,
+        "files": saved,
+        "file_count": len(saved),
+        "total_size": sum(x["size"] for x in saved),
+    }
+
+
+def init_direct_upload(
+    *,
+    files_meta: Sequence[Dict[str, Any]],
+    expire_hours: Optional[float] = None,
+    max_extracts: Optional[int] = None,
+    title: str = "",
+    uploader: str = "",
+    source: str = "web",
+    client_ip: str = "",
+) -> Dict[str, Any]:
+    """Create package + 139 upload tasks; the browser PUTs parts directly to the
+    cloud via presigned URLs, then calls complete_direct_upload()."""
+    cfg = load_config()
+    up = cfg.get("upload") or {}
+    st = cfg.get("storage") or {}
+    y = st.get("yun139") or {}
+    if not y.get("enabled") or not (y.get("authorization") or "").strip():
+        raise TransferError("未配置移动云盘：请在后台启用并填写 Authorization", 503)
+
+    ip = (client_ip or "").strip()
+    if ip:
+        banned = db.is_ip_banned(ip)
+        if banned:
+            raise TransferError("该地址已被禁止上传", 403)
+
+    max_n = int(up.get("max_files_per_package") or 50)
+    if not files_meta:
+        raise TransferError("请至少上传一个文件")
+    if len(files_meta) > max_n:
+        raise TransferError(f"单次最多 {max_n} 个文件")
+
+    limit = max_bytes()
+    prepared: List[Dict[str, Any]] = []
+    for fm in files_meta:
+        name = str(fm.get("name") or "")
+        ok, pure = validate_filename(name)
+        if not ok:
+            raise TransferError(pure)
+        size = int(fm.get("size") or 0)
+        sha = str(fm.get("sha256") or "").strip().lower()
+        if size > limit:
+            raise TransferError(f"{pure} 超过大小限制 {up.get('max_file_size_mb')}MB")
+        if size <= 0:
+            raise TransferError(f"{pure} 是空文件")
+        if not re.fullmatch(r"[0-9a-f]{64}", sha):
+            raise TransferError(f"{pure} 缺少有效的 SHA256（直传需要）")
+        prepared.append(
+            {
+                "name": pure,
+                "size": size,
+                "sha256": sha,
+                "content_type": str(fm.get("content_type") or "application/octet-stream"),
+            }
+        )
+
+    hours = expire_hours
+    if hours is None:
+        hours = float(up.get("default_expire_hours") or 72)
+    hours = float(hours)
+    if hours <= 0:
+        hours = float(up.get("default_expire_hours") or 72)
+    max_days = float(up.get("max_expire_days") or 90)
+    if max_days < 1:
+        max_days = 1
+    if max_days > 3650:
+        max_days = 3650
+    max_hours = max_days * 24
+    if hours > max_hours:
+        raise TransferError(f"有效期不能超过 {int(max_days) if max_days == int(max_days) else max_days} 天")
+    hours = min(hours, max_hours)
+
+    extracts = int(max_extracts) if max_extracts is not None else int(up.get("default_max_extracts") or 0)
+    if extracts < 0:
+        extracts = 0
+    if extracts > 100000:
+        extracts = 100000
+
+    code_len = int(up.get("extract_code_length") or 6)
+    code = _unique_code(code_len)
+    expire_at = time.time() + hours * 3600
+    pkg_id = db.create_package(
+        extract_code=code,
+        expire_at=expire_at,
+        title=title or prepared[0]["name"],
+        uploader=uploader,
+        source=source,
+        max_extracts=extracts,
+        uploader_ip=ip,
+    )
+
+    created_tasks: List[Dict[str, Any]] = []
+    try:
+        for fm in prepared:
+            task = store.create_upload_task(fm["name"], fm["size"], fm["sha256"])
+            if not task.get("file_id"):
+                raise store.StorageError("云盘创建上传任务失败：无 fileId", 502)
+            created_tasks.append(
+                {
+                    "name": fm["name"],
+                    "size": fm["size"],
+                    "sha256": fm["sha256"],
+                    "content_type": fm["content_type"],
+                    "file_id": task["file_id"],
+                    "upload_id": task["upload_id"],
+                    "exist": task["exist"],
+                    "file_name": task["file_name"],
+                    "parts": task["parts"],
+                }
+            )
+    except Exception:
+        for t in created_tasks:
+            try:
+                store.delete_file("yun139", f"yun139://{t['file_id']}", t["file_id"])
+            except Exception:
+                pass
+        try:
+            db.delete_package(pkg_id)
+        except Exception:
+            pass
+        raise
+
+    return {
+        "package_id": pkg_id,
+        "extract_code": code,
+        "expire_at": expire_at,
+        "expire_hours": hours,
+        "max_extracts": extracts,
+        "files": created_tasks,
+    }
+
+
+def complete_direct_upload(
+    *, package_id: int, files: Sequence[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """Finalize a direct upload: complete 139 tasks and record files in DB."""
+    saved: List[Dict[str, Any]] = []
+    try:
+        for fm in files:
+            file_id = str(fm.get("file_id") or "")
+            upload_id = str(fm.get("upload_id") or "")
+            sha = str(fm.get("sha256") or "").strip().lower()
+            name = str(fm.get("name") or "")
+            ctype = str(fm.get("content_type") or "application/octet-stream")
+            size = int(fm.get("size") or 0)
+            exist = bool(fm.get("exist"))
+            if not file_id:
+                raise TransferError("文件缺少 file_id，请重新上传", 400)
+            if not exist:
+                store.complete_upload(file_id, upload_id, sha)
+            meta = {
+                "backend": "yun139",
+                "storage_path": f"yun139://{file_id}",
+                "stored_name": str(fm.get("file_name") or name),
+                "size": str(size),
+                "sha256": sha,
+                "remote_id": file_id,
+            }
+            fid = db.add_file(
+                package_id=package_id,
+                original_name=name,
+                stored_name=meta["stored_name"],
+                size=size,
+                content_type=ctype,
+                storage_backend=meta["backend"],
+                storage_path=meta["storage_path"],
+                remote_id=meta["remote_id"],
+                sha256=meta["sha256"],
+            )
+            saved.append(
+                {
+                    "id": fid,
+                    "name": name,
+                    "size": size,
+                    "content_type": ctype,
+                }
+            )
+    except Exception as e:
+        try:
+            purge_package(package_id)
+        except Exception:
+            pass
+        if isinstance(e, TransferError):
+            raise
+        raise TransferError(f"完成上传失败: {e}", 502)
+
+    return {
+        "package_id": package_id,
         "files": saved,
         "file_count": len(saved),
         "total_size": sum(x["size"] for x in saved),

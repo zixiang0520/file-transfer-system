@@ -23,14 +23,17 @@ from app.config_store import (
     set_admin_password,
     verify_admin,
 )
+from app.core import storage as store
 from app.core.storage import Yun139Client
 from app.core.transfer import (
     TransferError,
     build_zip_for_package,
     build_zip_for_selected,
     cleanup_expired,
+    complete_direct_upload,
     create_package_with_files,
     get_package_public,
+    init_direct_upload,
     purge_package,
     resolve_download,
 )
@@ -316,6 +319,85 @@ async def api_upload(
         return JSONResponse({"error": e.message}, status_code=e.code)
     except Exception as e:
         logger.exception("upload failed")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/direct-upload/init")
+async def api_direct_upload_init(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "需要 JSON 请求体"}, status_code=400)
+    try:
+        result = init_direct_upload(
+            files_meta=body.get("files") or [],
+            expire_hours=body.get("expire_hours"),
+            max_extracts=body.get("max_extracts"),
+            title=body.get("title") or "",
+            source="web",
+            client_ip=get_client_ip(request),
+        )
+        return result
+    except TransferError as e:
+        return JSONResponse({"error": e.message}, status_code=e.code)
+    except Exception as e:
+        logger.exception("direct upload init failed")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/direct-upload/complete")
+async def api_direct_upload_complete(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "需要 JSON 请求体"}, status_code=400)
+    try:
+        package_id = int(body.get("package_id") or 0)
+        if package_id <= 0:
+            raise TransferError("缺少 package_id", 400)
+        result = complete_direct_upload(
+            package_id=package_id,
+            files=body.get("files") or [],
+        )
+        pkg = db.get_package(package_id)
+        code = (pkg or {}).get("extract_code") or ""
+        cfg = load_config()
+        base = (cfg.get("site") or {}).get("public_base_url") or ""
+        result["extract_code"] = code
+        result["extract_url"] = (
+            f"{base.rstrip('/')}/extract?code={code}" if base else f"/extract?code={code}"
+        )
+        return result
+    except TransferError as e:
+        return JSONResponse({"error": e.message}, status_code=e.code)
+    except Exception as e:
+        logger.exception("direct upload complete failed")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/direct-upload/cancel")
+async def api_direct_upload_cancel(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "需要 JSON 请求体"}, status_code=400)
+    try:
+        package_id = int(body.get("package_id") or 0)
+        for fm in body.get("files") or []:
+            fid = str(fm.get("file_id") or "")
+            if fid:
+                try:
+                    store.delete_file("yun139", f"yun139://{fid}", fid)
+                except Exception:
+                    pass
+        if package_id > 0:
+            try:
+                db.delete_package(package_id)
+            except Exception:
+                pass
+        return {"ok": True}
+    except Exception as e:
+        logger.exception("direct upload cancel failed")
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
