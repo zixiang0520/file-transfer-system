@@ -533,6 +533,14 @@ async def api_pipeline_upload_complete(request: Request):
                     shutil.rmtree(st["dir"], ignore_errors=True)
                 _pipeline_state.pop(fid, None)
         result = complete_direct_upload(package_id=package_id, files=files)
+        pkg = db.get_package(package_id)
+        code = (pkg or {}).get("extract_code") or ""
+        cfg = load_config()
+        base = (cfg.get("site") or {}).get("public_base_url") or ""
+        result["extract_code"] = code
+        result["extract_url"] = (
+            f"{base.rstrip('/')}/extract?code={code}" if base else f"/extract?code={code}"
+        )
         return result
     except TransferError as e:
         return JSONResponse({"error": e.message}, status_code=e.code)
