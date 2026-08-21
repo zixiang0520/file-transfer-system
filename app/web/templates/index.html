@@ -317,7 +317,7 @@
         // 3) 浏览器直传云盘：逐个分片 PUT 到预签名 URL
         let uploaded = 0, lastLoaded = 0, lastTs = Date.now();
         for (const fm of initData.files) {
-          if (fm.exist) { uploaded += fm.size; continue; } // 秒传命中，无需上传
+          if (fm.exist || fm.rapid) { uploaded += fm.size; continue; } // 秒传/急速上传命中，无需上传
           const file = selectedFiles.find(x => x.name === fm.name && x.size === fm.size);
           if (!file) throw new Error('找不到本地文件：' + fm.name);
           const parts = fm.parts || [];
@@ -352,7 +352,7 @@
             package_id: initData.package_id,
             files: (initData.files || []).map(f => ({
               name: f.name, size: f.size, sha256: f.sha256, content_type: f.content_type,
-              file_id: f.file_id, upload_id: f.upload_id, file_name: f.file_name, exist: f.exist
+              file_id: f.file_id, upload_id: f.upload_id, file_name: f.file_name, exist: f.exist, rapid: f.rapid
             }))
           })
         });

@@ -422,10 +422,12 @@ class Yun139Client:
         upload_id = data.get("uploadId") or ""
         parts = []
         for up in data.get("partInfos") or []:
+            pn = int(up.get("partNumber") or (len(parts) + 1))
+            byte_size = min(size - (pn - 1) * part_size, part_size)
             parts.append(
                 {
-                    "partNumber": up.get("partNumber"),
-                    "partSize": up.get("partSize"),
+                    "partNumber": pn,
+                    "partSize": byte_size,
                     "uploadUrl": up.get("uploadUrl") or up.get("cdnUploadUrl") or "",
                 }
             )
@@ -433,6 +435,7 @@ class Yun139Client:
             "file_id": file_id,
             "upload_id": upload_id,
             "exist": bool(data.get("exist") and file_id),
+            "rapid": bool(data.get("rapidUpload")),
             "file_name": data.get("fileName") or name,
             "part_size": part_size,
             "size": size,

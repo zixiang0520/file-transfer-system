@@ -282,6 +282,7 @@ def init_direct_upload(
                     "file_id": task["file_id"],
                     "upload_id": task["upload_id"],
                     "exist": task["exist"],
+                    "rapid": task.get("rapid"),
                     "file_name": task["file_name"],
                     "parts": task["parts"],
                 }
@@ -322,9 +323,10 @@ def complete_direct_upload(
             ctype = str(fm.get("content_type") or "application/octet-stream")
             size = int(fm.get("size") or 0)
             exist = bool(fm.get("exist"))
+            rapid = bool(fm.get("rapid"))
             if not file_id:
                 raise TransferError("文件缺少 file_id，请重新上传", 400)
-            if not exist:
+            if not exist and not rapid:
                 store.complete_upload(file_id, upload_id, sha)
             meta = {
                 "backend": "yun139",
