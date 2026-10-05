@@ -197,17 +197,24 @@ def index(request: Request):
             "site_name": (cfg.get("site") or {}).get("name") or "文件流转系统",
             "max_expire_days": max_days_disp,
         },
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
     )
 
 
 @app.get("/extract", response_class=HTMLResponse)
 def extract_page(request: Request):
-    return TEMPLATES.TemplateResponse(request, "extract.html", {})
+    return TEMPLATES.TemplateResponse(
+        request, "extract.html", {},
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
 
 
 @app.get("/admin", response_class=HTMLResponse)
 def admin_page(request: Request):
-    return TEMPLATES.TemplateResponse(request, "admin.html", {})
+    return TEMPLATES.TemplateResponse(
+        request, "admin.html", {},
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
 
 
 @app.post("/api/login")

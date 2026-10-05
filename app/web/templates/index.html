@@ -325,14 +325,28 @@
         try {
           worker = new Worker(URL.createObjectURL(new Blob([shaWorkerSrc], { type: 'application/javascript' })));
         } catch (e) { reject(e); return; }
+        // 兜底超时：Worker 无响应（某些手机浏览器 Blob Worker/大文件 slice 异常）
+        // 时给出明确错误而不是永远"准备中"
+        const timer = setTimeout(() => {
+          try { worker.terminate(); } catch (e) {}
+          reject(new Error('校验值计算超时（Worker 无响应）。请刷新页面重试，或换 Chrome/Edge 浏览器'));
+        }, 300000);
         worker.onmessage = (e) => {
           if (e.data.type === 'progress') { if (onProgress) onProgress(e.data.loaded, e.data.total); }
-          else if (e.data.type === 'done') { worker.terminate(); resolve(e.data.sha); }
-          else if (e.data.type === 'error') { worker.terminate(); reject(new Error(e.data.message)); }
+          else if (e.data.type === 'done') { clearTimeout(timer); worker.terminate(); resolve(e.data.sha); }
+          else if (e.data.type === 'error') { clearTimeout(timer); worker.terminate(); reject(new Error(e.data.message)); }
         };
-        worker.onerror = () => { worker.terminate(); reject(new Error('校验值计算 Worker 出错')); };
+        worker.onerror = () => { clearTimeout(timer); worker.terminate(); reject(new Error('校验值计算 Worker 出错')); };
         worker.postMessage({ id: 0, file: file, chunkSize: 4 * 1024 * 1024 });
       });
+    }
+
+    // 带超时的 JSON 请求：防止服务器/网络无响应时按钮永久卡在"准备中"
+    function fetchJSON(url, opts = {}, ms = 60000) {
+      const ctrl = ('AbortController' in window) ? new AbortController() : null;
+      const timer = ctrl ? setTimeout(() => ctrl.abort(), ms) : null;
+      return fetch(url, ctrl ? Object.assign({}, opts, { signal: ctrl.signal }) : opts)
+        .finally(() => { if (timer) clearTimeout(timer); });
     }
 
     function handleFiles(files) {
@@ -402,7 +416,7 @@
     // 服务器边收边转 139 → pipeline complete 收尾。失败则抛错给上层。
     async function fallbackRelay(expireHours, maxExt, totalSize, filesMeta) {
       setProgress(0, '直传校验失败，自动改走服务器中转…', 0, totalSize, '');
-      const initResp = await fetch('/api/direct-upload/init', {
+      const initResp = await fetchJSON('/api/direct-upload/init', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ title: '', expire_hours: expireHours, max_extracts: maxExt, files: filesMeta })
@@ -439,7 +453,7 @@
           }
         }
         setProgress(100, '正在完成上传（中转收尾）…', totalSize, totalSize, '');
-        const compResp = await fetch('/api/pipeline-upload/complete', {
+        const compResp = await fetchJSON('/api/pipeline-upload/complete', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({
@@ -459,7 +473,7 @@
         // 清理半成品
         try {
           if (init2 && init2.package_id) {
-            await fetch('/api/direct-upload/cancel', {
+            await fetchJSON('/api/direct-upload/cancel', {
               method: 'POST',
               headers: {'Content-Type': 'application/json'},
               body: JSON.stringify({ package_id: init2.package_id, files: init2.files || [] })
@@ -510,7 +524,7 @@
 
         // 2) 创建上传任务（服务器在云盘建任务，返回预签名分片 URL）
         setProgress(0, '正在创建上传任务…', 0, totalSize, '');
-        const initResp = await fetch('/api/direct-upload/init', {
+        const initResp = await fetchJSON('/api/direct-upload/init', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({ title: '', expire_hours: expireHours, max_extracts: maxExt, files: filesMeta })
@@ -585,7 +599,7 @@
         setProgress(100, '正在完成上传…', totalSize, totalSize, '');
         let compData = null;
         try {
-          const compResp = await fetch('/api/direct-upload/complete', {
+          const compResp = await fetchJSON('/api/direct-upload/complete', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({
@@ -609,7 +623,7 @@
             compData = await fallbackRelay(expireHours, maxExt, totalSize, filesMeta);
             // 降级成功后清理原直传任务的半成品（云盘未完成分片 + 空包记录）
             try {
-              await fetch('/api/direct-upload/cancel', {
+              await fetchJSON('/api/direct-upload/cancel', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({ package_id: initData.package_id, files: initData.files || [] })
@@ -626,7 +640,7 @@
         // 清理已创建但未完成的任务
         try {
           if (initData && initData.package_id) {
-            await fetch('/api/direct-upload/cancel', {
+            await fetchJSON('/api/direct-upload/cancel', {
               method: 'POST',
               headers: {'Content-Type': 'application/json'},
               body: JSON.stringify({
