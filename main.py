@@ -17,6 +17,7 @@ from starlette.background import BackgroundTask
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 
 from app import db
 from app.config_store import (
@@ -56,6 +57,9 @@ app.add_middleware(
     secret_key=cfg0.get("session_secret") or "fts-dev-secret",
     max_age=7 * 24 * 3600,
 )
+
+# gzip：tailwind.js(~400KB)/fa css(~100KB)/页面 HTML 同源提供，压缩后传输体积降 ~70%
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 # ---- 流水线分片中转状态（浏览器一片片传 NAS，NAS 后台按序转 139）----
 # 139 要求分片严格按序上传（InvalidPartOrder），所以浏览器顺序发片（在途 1），
