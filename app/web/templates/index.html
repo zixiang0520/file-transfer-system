@@ -397,125 +397,77 @@
       document.getElementById('progressSpeed').textContent=speed||'';
     }
 
-    // 大文件走"流水线分片中转"：浏览器一片片传 NAS，NAS 收到一片立刻转 139，不等全部收完
-    // 浏览器用 Worker 后台算 sha（不卡页面），按 init 返回的 partSize 切片，在途 2 片并发
-    function uploadPipeline(expireHours, maxExt, totalSize) {
-      return new Promise(async (resolve, reject) => {
-        let initData = null;
-        try {
-          // 1) Worker 后台逐个算 SHA256
-          const filesMeta = [];
-          for (let fi = 0; fi < selectedFiles.length; fi++) {
-            const f = selectedFiles[fi];
-            setProgress(0, '正在计算 ' + f.name + ' 的校验值（后台计算）…', 0, totalSize, '');
-            const sha = await sha256FileAsync(f, (loaded, total) => {
-              const pct = total ? (loaded / total * 100) : 0;
-              setProgress(pct, '正在计算 ' + f.name + ' 的校验值…', loaded, total, '');
-            });
-            filesMeta.push({ name: f.name, size: f.size, sha256: sha, content_type: f.type || 'application/octet-stream' });
-          }
-
-          // 2) init：创建 139 上传任务（复用直传接口）
-          setProgress(0, '正在创建上传任务…', 0, totalSize, '');
-          const initResp = await fetch('/api/direct-upload/init', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ title: '', expire_hours: expireHours, max_extracts: maxExt, files: filesMeta })
-          });
-          initData = await initResp.json().catch(() => ({}));
-          if (!initResp.ok || !initData || initData.error) {
-            throw new Error((initData && initData.error) || ('创建上传任务失败 HTTP ' + initResp.status));
-          }
-
-          // 3) 切片 + 流水线并发上传（在途 2 片，NAS 边收边转）
-          const parts = [];
-          for (const fm of initData.files || []) {
-            const fileObj = selectedFiles.find(f => f.name === fm.name && f.size === fm.size);
-            let off = 0;
-            for (const p of (fm.parts || [])) {
-              parts.push({
-                fileObj: fileObj,
-                fm: fm,
-                part: { number: p.partNumber, size: p.partSize, url: p.uploadUrl || '', offset: off }
-              });
-              off += p.partSize;
-            }
-          }
-          let doneBytes = 0;
-          const uploadOne = (item) => new Promise((res, rej) => {
-            const chunk = item.fileObj.slice(item.part.offset, item.part.offset + item.part.size);
-            const fd = new FormData();
-            fd.append('file_id', item.fm.file_id);
-            fd.append('part_number', String(item.part.number));
-            fd.append('part_size', String(item.part.size));
-            fd.append('upload_url', item.part.url);
-            fd.append('chunk', chunk, 'part.bin');
-            const xhr = new XMLHttpRequest();
-            xhr.open('POST', '/api/pipeline-upload/part');
-            xhr.upload.onprogress = (e) => {
-              if (e.lengthComputable) {
-                const done = Math.min(doneBytes + e.loaded, totalSize);
-                setProgress(totalSize ? (done / totalSize * 100) : 0, '上传中（NAS 边收边转）…', done, totalSize, '');
-              }
-            };
-            xhr.onload = () => {
-              if (xhr.status >= 200 && xhr.status < 300) { doneBytes += item.part.size; res(); }
-              else {
-                let msg = '分片 ' + item.part.number + ' 上传失败 HTTP ' + xhr.status;
-                try { const r = JSON.parse(xhr.responseText); if (r.error) msg = r.error; } catch (e) {}
-                rej(new Error(msg));
-              }
-            };
-            xhr.onerror = () => rej(new Error('分片 ' + item.part.number + ' 网络错误，请重试'));
-            xhr.send(fd);
-          });
-          let next = 0;
-          const worker = async () => {
-            while (next < parts.length) {
-              const item = parts[next++];
-              let lastErr = null;
-              for (let attempt = 0; attempt < 3; attempt++) {
-                try { await uploadOne(item); lastErr = null; break; }
-                catch (e) { lastErr = e; await new Promise(r => setTimeout(r, 600 * (attempt + 1))); }
-              }
-              if (lastErr) throw lastErr;
-            }
-          };
-          const concurrency = 1; // 139 要求分片严格按序上传，浏览器顺序发片（每片等 NAS 入队确认）；NAS 后台按序转 139，边收边转
-          await Promise.all(Array.from({ length: concurrency }, worker));
-
-          // 4) complete（等 NAS 后台把队列片全部转完 139）
-          setProgress(99, '正在完成上传…', totalSize, totalSize, '');
-          const compResp = await fetch('/api/pipeline-upload/complete', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-              package_id: initData.package_id,
-              files: (initData.files || []).map(fm => ({
-                name: fm.name, size: fm.size, sha256: fm.sha256, content_type: fm.content_type,
-                file_id: fm.file_id, upload_id: fm.upload_id, exist: fm.exist, rapid: fm.rapid, file_name: fm.file_name
-              }))
-            })
-          });
-          const compData = await compResp.json().catch(() => ({}));
-          if (!compResp.ok || !compData || compData.error) {
-            throw new Error((compData && compData.error) || ('完成上传失败 HTTP ' + compResp.status));
-          }
-          resolve(compData);
-        } catch (err) {
-          // 清理半成品（139 未完成文件 + 数据库包）
-          try {
-            if (initData && initData.package_id) {
-              await fetch('/api/direct-upload/cancel', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ package_id: initData.package_id, files: initData.files || [] })
-              });
-            }
-          } catch (e) {}
-          reject(err);
-        }
+    // 直传 complete 报摘要不匹配（如客户端网络损坏 100MB 官方分片）时的兜底：
+    // 整文件降级服务器流水线中转——新建任务 → 浏览器顺序发片到服务器 →
+    // 服务器边收边转 139 → pipeline complete 收尾。失败则抛错给上层。
+    async function fallbackRelay(expireHours, maxExt, totalSize, filesMeta) {
+      setProgress(0, '直传校验失败，自动改走服务器中转…', 0, totalSize, '');
+      const initResp = await fetch('/api/direct-upload/init', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ title: '', expire_hours: expireHours, max_extracts: maxExt, files: filesMeta })
       });
+      const init2 = await initResp.json().catch(() => ({}));
+      if (!initResp.ok || !init2 || init2.error) {
+        throw new Error('中转任务创建失败：' + ((init2 && init2.error) || ('HTTP ' + initResp.status)));
+      }
+      try {
+        let uploaded = 0;
+        for (const fm of (init2.files || [])) {
+          if (fm.exist || fm.rapid) { uploaded += (fm.size || 0); continue; } // 秒传命中
+          const file = selectedFiles.find(x => x.name === fm.name && x.size === fm.size);
+          if (!file) throw new Error('找不到本地文件：' + fm.name);
+          for (const p of (fm.parts || [])) {
+            const start = (p.partNumber - 1) * p.partSize;
+            const end = Math.min(start + p.partSize, file.size);
+            const fd = new FormData();
+            fd.append('file_id', fm.file_id);
+            fd.append('part_number', String(p.partNumber));
+            fd.append('part_size', String(end - start));
+            fd.append('upload_url', p.uploadUrl || '');
+            fd.append('chunk', file.slice(start, end), 'part.bin');
+            const resp = await fetch('/api/pipeline-upload/part', { method: 'POST', body: fd });
+            if (!resp.ok) {
+              let msg = '';
+              try { const r = await resp.json(); if (r.error) msg = r.error; } catch (e) {}
+              throw new Error((msg || ('HTTP ' + resp.status)));
+            }
+            uploaded += end - start;
+            const pct = totalSize ? (uploaded / totalSize * 100) : 0;
+            setProgress(pct, '服务器中转：' + fm.name + '（分片 ' + p.partNumber + '/' + (fm.parts || []).length + '）',
+                        uploaded, totalSize, '');
+          }
+        }
+        setProgress(100, '正在完成上传（中转收尾）…', totalSize, totalSize, '');
+        const compResp = await fetch('/api/pipeline-upload/complete', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            package_id: init2.package_id,
+            files: (init2.files || []).map(f => ({
+              name: f.name, size: f.size, sha256: f.sha256, content_type: f.content_type,
+              file_id: f.file_id, upload_id: f.upload_id, file_name: f.file_name, exist: f.exist, rapid: f.rapid
+            }))
+          })
+        });
+        const comp2 = await compResp.json().catch(() => ({}));
+        if (!compResp.ok || comp2.error) {
+          throw new Error(comp2.error || ('中转收尾失败 HTTP ' + compResp.status));
+        }
+        return comp2;
+      } catch (err) {
+        // 清理半成品
+        try {
+          if (init2 && init2.package_id) {
+            await fetch('/api/direct-upload/cancel', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({ package_id: init2.package_id, files: init2.files || [] })
+            });
+          }
+        } catch (e) {}
+        throw new Error('服务器中转也失败：' + (err && err.message ? err.message : err));
+      }
     }
 
     async function uploadFiles() {
@@ -539,33 +491,20 @@
       let maxExt = parseInt(document.getElementById('maxExtracts').value, 10);
       if (isNaN(maxExt) || maxExt < 0) maxExt = 0;
 
-      // 大文件（>10MB）走流水线分片中转，绕开直传损坏路径
-      if (totalSize > 10 * 1024 * 1024) {
-        setProgress(0, '开始上传（流水线分片）…', 0, totalSize, '');
-        try {
-          const r = await uploadPipeline(expireHours, maxExt, totalSize);
-          selectedFiles = [];
-          shaCache.clear(); shaCacheBytes = 0;
-          showResult(r);
-        } catch (err) {
-          alert('上传失败：' + (err && err.message ? err.message : err));
-        } finally {
-          btn.disabled = false; btn.innerHTML = oldHtml;
-          document.getElementById('progressWrap').classList.add('hidden');
-        }
-        return;
-      }
-
+      // 所有大小统一走「浏览器直传云盘」：分片 10MB（服务端控制），单片失败
+      // 自动重试 + 降级服务器同步中转。秒传（云端已有同内容文件）0 流量完成。
       setProgress(0, '正在计算文件校验值…', 0, totalSize, '');
 
       let initData = null;
       try {
-        // 1) 逐个计算 SHA256（纯 JS，主线程）
+        // 1) 逐个计算 SHA256（Web Worker 后台算，不卡页面、不缓存整文件）
         const filesMeta = [];
         for (let fi = 0; fi < selectedFiles.length; fi++) {
           const f = selectedFiles[fi];
-          setProgress(0, '正在计算 ' + f.name + ' 的校验值…', 0, totalSize, '大文件可能需要一些时间');
-          const sha = await sha256Hex(f, fi);
+          const sha = await sha256FileAsync(f, (loaded, total) => {
+            const pct = total ? (loaded / total * 100) : 0;
+            setProgress(pct, '正在计算 ' + f.name + ' 的校验值…', loaded, total, '');
+          });
           filesMeta.push({ name: f.name, size: f.size, sha256: sha, content_type: f.type || 'application/octet-stream' });
         }
 
@@ -581,33 +520,56 @@
           throw new Error(initData.error || ('创建上传任务失败 HTTP ' + initResp.status));
         }
 
-        // 3) 浏览器直传云盘：逐个分片 PUT 到预签名 URL
+        // 3) 浏览器直传云盘：逐个分片 PUT 到预签名 URL（顺序发片，139 要求严格按序）
         let uploaded = 0, lastLoaded = 0, lastTs = Date.now();
         for (const fm of initData.files) {
           if (fm.exist || fm.rapid) { uploaded += fm.size; continue; } // 秒传/急速上传命中，无需上传
           const file = selectedFiles.find(x => x.name === fm.name && x.size === fm.size);
           if (!file) throw new Error('找不到本地文件：' + fm.name);
           const parts = fm.parts || [];
-          const idx = initData.files.indexOf(fm);
-          const cachedBuf = idx >= 0 ? shaCache.get('f' + idx) : undefined;
           for (let i = 0; i < parts.length; i++) {
             const part = parts[i];
             const start = (part.partNumber - 1) * part.partSize;
             const end = Math.min(start + part.partSize, file.size);
-            let body;
-            if (cachedBuf) {
-              // 用 sha 计算时锁定在内存的同一份数据，杜绝文件被修改导致的不一致
-              body = new Blob([new Uint8Array(cachedBuf, start, end - start)]);
-            } else {
-              body = file.slice(start, end);
+            const chunkSize = end - start;
+            let ok = false, lastErr = null;
+            // 同片直传重试（小分片失败多为瞬时抖动；对象存储 PUT 同片幂等可重试）
+            for (let attempt = 0; attempt < 2 && !ok; attempt++) {
+              try {
+                const putResp = await fetch(part.uploadUrl, {
+                  method: 'PUT',
+                  headers: {'Content-Type': 'application/octet-stream'},
+                  body: file.slice(start, end)
+                });
+                if (putResp.ok) { ok = true; break; }
+                lastErr = new Error('HTTP ' + putResp.status);
+              } catch (e) { lastErr = e; }
             }
-            const putResp = await fetch(part.uploadUrl, {
-              method: 'PUT',
-              headers: {'Content-Type': 'application/octet-stream'},
-              body: body
-            });
-            if (!putResp.ok) throw new Error(fm.name + ' 分片 ' + part.partNumber + ' 上传失败（HTTP ' + putResp.status + '）');
-            uploaded += end - start;
+            // 直传仍失败 → 降级服务器同步中转该片（sync=1 服务器转完才返回，
+            // 之后浏览器再传下一片，保住 139 分片严格按序）
+            if (!ok) {
+              setProgress(totalSize ? (uploaded / totalSize * 100) : 0,
+                '分片 ' + part.partNumber + ' 直传失败，改经服务器中转…',
+                uploaded, totalSize, '');
+              const fd = new FormData();
+              fd.append('file_id', fm.file_id);
+              fd.append('part_number', String(part.partNumber));
+              fd.append('part_size', String(chunkSize));
+              fd.append('upload_url', part.uploadUrl);
+              fd.append('sync', '1');
+              fd.append('chunk', file.slice(start, end), 'part.bin');
+              try {
+                const relResp = await fetch('/api/pipeline-upload/part', { method: 'POST', body: fd });
+                if (!relResp.ok) {
+                  let msg = '';
+                  try { const r = await relResp.json(); if (r.error) msg = r.error; } catch (e) {}
+                  throw new Error(msg || ('HTTP ' + relResp.status));
+                }
+              } catch (e) {
+                throw new Error(fm.name + ' 分片 ' + part.partNumber + ' 直传与中转均失败：' + (e && e.message ? e.message : e));
+              }
+            }
+            uploaded += chunkSize;
             const now = Date.now();
             const dt = Math.max(1, now - lastTs) / 1000;
             const speed = (uploaded - lastLoaded) / dt;
@@ -621,20 +583,41 @@
 
         // 4) 完成：服务器通知云盘合并分片并登记
         setProgress(100, '正在完成上传…', totalSize, totalSize, '');
-        const compResp = await fetch('/api/direct-upload/complete', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({
-            package_id: initData.package_id,
-            files: (initData.files || []).map(f => ({
-              name: f.name, size: f.size, sha256: f.sha256, content_type: f.content_type,
-              file_id: f.file_id, upload_id: f.upload_id, file_name: f.file_name, exist: f.exist, rapid: f.rapid
-            }))
-          })
-        });
-        const compData = await compResp.json().catch(() => ({}));
-        if (!compResp.ok || compData.error) {
-          throw new Error(compData.error || ('完成上传失败 HTTP ' + compResp.status));
+        let compData = null;
+        try {
+          const compResp = await fetch('/api/direct-upload/complete', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+              package_id: initData.package_id,
+              files: (initData.files || []).map(f => ({
+                name: f.name, size: f.size, sha256: f.sha256, content_type: f.content_type,
+                file_id: f.file_id, upload_id: f.upload_id, file_name: f.file_name, exist: f.exist, rapid: f.rapid
+              }))
+            })
+          });
+          const cd = await compResp.json().catch(() => ({}));
+          if (!compResp.ok || cd.error) {
+            throw new Error(cd.error || ('完成上传失败 HTTP ' + compResp.status));
+          }
+          compData = cd;
+        } catch (compErr) {
+          const msg = String((compErr && compErr.message) || compErr);
+          // 回退 100MB 官方分片的大文件若遇客户端网络损坏大块 → 摘要不匹配，
+          // 自动整文件降级服务器中转兜底；其他错误原样抛出
+          if (msg.includes('摘要') || msg.includes('00010326')) {
+            compData = await fallbackRelay(expireHours, maxExt, totalSize, filesMeta);
+            // 降级成功后清理原直传任务的半成品（云盘未完成分片 + 空包记录）
+            try {
+              await fetch('/api/direct-upload/cancel', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ package_id: initData.package_id, files: initData.files || [] })
+              });
+            } catch (e) {}
+          } else {
+            throw compErr;
+          }
         }
         selectedFiles = [];
         shaCache.clear(); shaCacheBytes = 0;

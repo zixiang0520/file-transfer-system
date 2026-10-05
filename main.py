@@ -464,13 +464,24 @@ async def api_pipeline_upload_part(
     part_size: int = Form(...),
     upload_url: str = Form(""),
     chunk: UploadFile = File(...),
+    sync: int = Form(0),
 ):
     """流水线分片中转：浏览器一片片 POST 到 NAS，NAS 收片入队立即返回 200，
     后台 worker 按序转发 139（139 要求分片顺序上传），不等全部收完。
+    sync=1：同步模式——服务器当场转发该片并等待结果再返回（用于直传坏片降级，
+    保证 139 分片严格按序：降级片转完浏览器才继续传下一片）。
     """
     try:
         if not upload_url:
             raise TransferError("缺少分片上传地址", 400)
+        if sync:
+            content = await chunk.read()
+            store.put_part(upload_url, content, part_size)
+            logger.info(
+                "pipeline part synced: file_id=%s part=%s size=%s",
+                file_id, part_number, part_size,
+            )
+            return {"ok": True, "part_number": part_number, "synced": True}
         st = _pipeline_get(file_id)
         if st["error"]:
             raise TransferError(f"流水线上传已失败：{st['error']}", 502)

@@ -1,9 +1,8 @@
 # syntax=docker/dockerfile:1
-# 国内构建可：
-#   docker pull docker.m.daocloud.io/library/python:3.11-slim-bookworm
-#   docker tag  docker.m.daocloud.io/library/python:3.11-slim-bookworm python:3.11-slim-bookworm
-# 或：docker build --build-arg BASE_IMAGE=docker.m.daocloud.io/library/python:3.11-slim-bookworm -t file-transfer-system:latest .
-ARG BASE_IMAGE=python:3.11-slim-bookworm
+# 默认基础镜像 python:3.12-alpine（ZX-YSK 等无法访问 Docker Hub 的机器可本地构建，
+# 依赖走 PyPI musllinux wheel，无需编译）。国内也可用：
+#   --build-arg BASE_IMAGE=docker.m.daocloud.io/library/python:3.11-slim-bookworm
+ARG BASE_IMAGE=python:3.12-alpine
 FROM ${BASE_IMAGE}
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -16,9 +15,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates tzdata \
-    && rm -rf /var/lib/apt/lists/*
+# alpine/slim 双兼容：alpine 用 apk，debian 系用 apt-get
+RUN if command -v apk >/dev/null 2>&1; then \
+        apk add --no-cache ca-certificates tzdata; \
+    else \
+        apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata \
+        && rm -rf /var/lib/apt/lists/*; \
+    fi
 
 COPY requirements.txt .
 # 国内网络可加 -i https://pypi.tuna.tsinghua.edu.cn/simple

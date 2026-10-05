@@ -17,7 +17,7 @@ import random
 import string
 import time
 import urllib.parse
-from typing import Any, BinaryIO, Dict, Iterator, Optional, Tuple
+from typing import Any, BinaryIO, Dict, Iterator, List, Optional, Tuple
 
 import httpx
 
@@ -387,13 +387,34 @@ class Yun139Client:
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
-    def create_upload_task(self, name: str, size: int, sha256: str) -> Dict[str, Any]:
+    def get_upload_urls(self, file_id: str, upload_id: str, batch_infos: List[dict]) -> List[dict]:
+        """Fetch presigned upload URLs for parts beyond the first 100 (create
+        only prefetches 100). batch_infos: [{partNumber, partSize, parallelHashCtx}]."""
+        self.require()
+        body = {
+            "fileId": file_id,
+            "uploadId": upload_id,
+            "partInfos": batch_infos,
+        }
+        resp = self.personal_post("/file/getUploadUrl", body)
+        data = resp.get("data") or {}
+        out = []
+        for up in data.get("partInfos") or []:
+            pn = int(up.get("partNumber") or 0)
+            out.append(
+                {
+                    "partNumber": pn,
+                    "uploadUrl": up.get("uploadUrl") or up.get("cdnUploadUrl") or "",
+                }
+            )
+        return out
+
+    def create_upload_task(self, name: str, size: int, sha256: str, part_size: int = PART_SIZE) -> Dict[str, Any]:
         """Create a 139 upload task and return presigned part URLs so the browser
         can PUT parts directly to the cloud (no server relay)."""
         self.require()
         parent = self.resolve_parent_id(self.root, auto_create=True)
         self._persist_resolved(parent)
-        part_size = PART_SIZE
         n_parts = max(1, (size + part_size - 1) // part_size)
         part_infos = []
         for i in range(n_parts):
@@ -434,6 +455,25 @@ class Yun139Client:
                     "uploadUrl": up.get("uploadUrl") or up.get("cdnUploadUrl") or "",
                 }
             )
+        # create 只预取前 100 片的 URL；剩余分片循环 getUploadUrl 续取（100 片/批）
+        have = {p["partNumber"] for p in parts}
+        for i in range(100, n_parts, 100):
+            batch = part_infos[i : min(i + 100, n_parts)]
+            got = self.get_upload_urls(file_id, upload_id, batch)
+            for g in got:
+                pn = g["partNumber"]
+                if pn in have or not g["uploadUrl"]:
+                    continue
+                have.add(pn)
+                byte_size = min(size - (pn - 1) * part_size, part_size)
+                parts.append(
+                    {
+                        "partNumber": pn,
+                        "partSize": byte_size,
+                        "uploadUrl": g["uploadUrl"],
+                    }
+                )
+        parts.sort(key=lambda p: p["partNumber"])
         return {
             "file_id": file_id,
             "upload_id": upload_id,
@@ -642,10 +682,10 @@ def save_file(fileobj: BinaryIO, original_name: str) -> Dict[str, str]:
     return yun.upload_bytes(data, original_name)
 
 
-def create_upload_task(name: str, size: int, sha256: str) -> Dict[str, Any]:
+def create_upload_task(name: str, size: int, sha256: str, part_size: int = PART_SIZE) -> Dict[str, Any]:
     """Module-level wrapper: create 139 upload task with presigned part URLs."""
     yun = Yun139Client()
-    return yun.create_upload_task(name, size, sha256)
+    return yun.create_upload_task(name, size, sha256, part_size=part_size)
 
 
 def complete_upload(file_id: str, upload_id: str, sha256: str) -> None:

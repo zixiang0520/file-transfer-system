@@ -17,6 +17,46 @@ from app.core import storage as store
 
 logger = logging.getLogger("fts.transfer")
 
+# 139 并行哈希校验规则（2026-10-05 实测矩阵）：
+#   多片上传时，尾片必须等于 partSize（严格整除），否则 complete 必报
+#   00010326 文件内容摘要值不匹配——官方默认 100MB 分片也不例外
+#   （152.5MB=100MB+52.5MB 尾片实测复现；5/8/10/15/20MB 分片尾片 1~10MB 全挂）。
+#   安全模式仅两种：①单片（partSize=size，≤512MB 均实测通过）；
+#   ②全部片严格等大（size 整除 partSize，5MB×5 / 10MB×3 / 10MB×25 实测通过）。
+# 因此直传分片：≤100MB 单片；>100MB 选「能整除 size 的最大整齐值」；无整齐
+# 约数的大文件走单片直传，若客户端网络损坏大块（00010326），由前端自动
+# 降级服务器流水线中转兜底。
+_PART_CANDIDATES = (
+    10 * 1024 * 1024,
+    8 * 1024 * 1024,
+    5 * 1024 * 1024,
+    4 * 1024 * 1024,
+    2 * 1024 * 1024,
+    1 * 1024 * 1024,
+)
+_MAX_DIRECT_PARTS = 2000  # 片数上限保护（139 分片数量存在上限，保守取值）
+
+
+def pick_part_size(size: int) -> int:
+    """Choose a direct-upload part size for a 139 create task.
+
+    - size <= 100MB: official default 100MB → single part, no tail-part issue.
+    - size > 100MB: largest "tidy" candidate that divides size exactly (all
+      parts equal, verified safe against 00010326), within the part-count cap.
+    - no tidy divisor: single part of the whole file (partSize=size, verified
+      safe); if the client network corrupts the big PUT, the front-end falls
+      back to server relay automatically.
+    """
+    size = int(size)
+    if size <= 0:
+        return store.PART_SIZE
+    if size <= store.PART_SIZE:
+        return store.PART_SIZE
+    for cand in _PART_CANDIDATES:
+        if size % cand == 0 and size // cand <= _MAX_DIRECT_PARTS:
+            return cand
+    return size  # 单片直传：无尾片，唯一安全的非整除形态
+
 
 class TransferError(Exception):
     def __init__(self, message: str, code: int = 400):
@@ -279,7 +319,11 @@ def init_direct_upload(
     created_tasks: List[Dict[str, Any]] = []
     try:
         for fm in prepared:
-            task = store.create_upload_task(fm["name"], fm["size"], fm["sha256"])
+            # 直传分片策略见 pick_part_size：≤100MB 单片；>100MB 选能整除的整齐
+            # 分片（139 非默认分片尾片不整除会 00010326）；无整齐约数回退官方 100MB
+            task = store.create_upload_task(
+                fm["name"], fm["size"], fm["sha256"], part_size=pick_part_size(fm["size"])
+            )
             if not task.get("file_id"):
                 raise store.StorageError("云盘创建上传任务失败：无 fileId", 502)
             created_tasks.append(
