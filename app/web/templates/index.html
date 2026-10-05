@@ -26,6 +26,13 @@
     .file-item { transition: background .15s; }
     .tap { -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
     .safe-pad { padding-left: max(1rem, env(safe-area-inset-left)); padding-right: max(1rem, env(safe-area-inset-right)); }
+    /* AI 审核等"不确定时长"阶段的滚动条纹动画 */
+    .progress-indeterminate {
+      background-image: linear-gradient(45deg, rgba(255,255,255,.28) 25%, transparent 25%, transparent 50%, rgba(255,255,255,.28) 50%, rgba(255,255,255,.28) 75%, transparent 75%, transparent);
+      background-size: 1.1rem 1.1rem;
+      animation: progress-stripes .7s linear infinite;
+    }
+    @keyframes progress-stripes { from { background-position: 0 0; } to { background-position: 1.1rem 0; } }
     @media (max-width: 640px) {
       .code-display { font-size: 1.75rem; letter-spacing: 0.2em; word-break: break-all; }
     }
@@ -350,6 +357,21 @@
         .finally(() => { if (timer) clearTimeout(timer); });
     }
 
+    // AI 审核等"不确定时长"阶段的等待 UI：滚动条纹 + 明确文案（否则 0% 不动像卡住）
+    function aiWaitUI(on, name) {
+      const bar = document.getElementById('progressBar');
+      bar.classList.toggle('progress-indeterminate', !!on);
+      document.getElementById('progressWrap').classList.remove('hidden');
+      if (on) {
+        bar.style.width = '100%';
+        document.getElementById('progressPct').textContent = '…';
+        document.getElementById('progressLabel').textContent =
+          'AI 安全审核中（约 5~15 秒，请勿关闭页面）：' + (name || '');
+        document.getElementById('progressBytes').textContent = '';
+        document.getElementById('progressSpeed').textContent = '';
+      }
+    }
+
     function handleFiles(files) {
       for (let f of files) {
         if (!selectedFiles.some(x => x.name === f.name && x.size === f.size)) selectedFiles.push(f);
@@ -435,13 +457,14 @@
             if ((fm.size || 0) > aiMax2 * 1024 * 1024) continue;
             const afile = selectedFiles.find(x => x.name === fm.name && x.size === fm.size);
             if (!afile) continue;
-            setProgress(0, 'AI 安全审核：' + fm.name + '…', 0, totalSize, '');
+            aiWaitUI(true, fm.name);
             const afd = new FormData();
             afd.append('package_id', String(init2.package_id));
             afd.append('file_id', fm.file_id);
             afd.append('filename', fm.name);
             afd.append('file', afile, fm.name);
             const ar = await fetchJSON('/api/ai-review/file', { method: 'POST', body: afd }, 120000);
+            aiWaitUI(false);
             const ad = await ar.json().catch(() => ({}));
             if (ad.verdict === 'reject') {
               throw new Error((fm.name || '文件') + ' 内容未通过安全审核：' + (ad.reason || '违规'));
@@ -569,13 +592,14 @@
             if ((fm.size || 0) > aiMax * 1024 * 1024) continue;
             const afile = selectedFiles.find(x => x.name === fm.name && x.size === fm.size);
             if (!afile) continue;
-            setProgress(0, 'AI 安全审核：' + fm.name + '…', 0, totalSize, '');
+            aiWaitUI(true, fm.name);
             const afd = new FormData();
             afd.append('package_id', String(initData.package_id));
             afd.append('file_id', fm.file_id);
             afd.append('filename', fm.name);
             afd.append('file', afile, fm.name);
             const ar = await fetchJSON('/api/ai-review/file', { method: 'POST', body: afd }, 120000);
+            aiWaitUI(false);
             const ad = await ar.json().catch(() => ({}));
             if (ad.verdict === 'reject') {
               throw new Error((fm.name || '文件') + ' 内容未通过安全审核：' + (ad.reason || '违规'));
