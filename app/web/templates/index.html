@@ -500,7 +500,12 @@
         const unit = document.getElementById('expireUnit').value;
         expireHours = unit === 'day' ? val * 24 : val;
         const maxDays = Number(document.getElementById('maxExpireHint').textContent) || 90;
-        if (expireHours > maxDays * 24) { alert('有效期不能超过 ' + maxDays + ' 天'); return; }
+        if (expireHours > maxDays * 24) {
+          alert('有效期不能超过 ' + maxDays + ' 天');
+          // 校验失败提前返回前必须恢复按钮，否则永远停在"准备中…"（2026-10-05 爸爸实测踩坑）
+          btn.disabled = false; btn.innerHTML = oldHtml;
+          return;
+        }
       }
       let maxExt = parseInt(document.getElementById('maxExtracts').value, 10);
       if (isNaN(maxExt) || maxExt < 0) maxExt = 0;
