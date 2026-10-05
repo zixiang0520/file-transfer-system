@@ -112,8 +112,19 @@
       const err = document.getElementById('err');
       err.classList.add('hidden');
       if (!code) { err.textContent='请输入提取码'; err.classList.remove('hidden'); return; }
-      const r = await fetch('/api/package/' + encodeURIComponent(code));
-      const data = await r.json();
+      let r, data;
+      try {
+        const ctrl = ('AbortController' in window) ? new AbortController() : null;
+        const timer = ctrl ? setTimeout(() => ctrl.abort(), 60000) : null;
+        r = await fetch('/api/package/' + encodeURIComponent(code), ctrl ? { signal: ctrl.signal } : {});
+        if (timer) clearTimeout(timer);
+        data = await r.json();
+      } catch (e) {
+        err.textContent = '查询超时或网络错误，请重试';
+        err.classList.remove('hidden');
+        document.getElementById('panel').classList.add('hidden');
+        return;
+      }
       if (!r.ok || data.error) {
         err.textContent = data.error || '查询失败';
         err.classList.remove('hidden');

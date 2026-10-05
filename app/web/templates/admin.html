@@ -141,8 +141,19 @@
     function fmtSize(n){n=Number(n)||0;if(n<1024)return n+'B';if(n<1048576)return (n/1024).toFixed(1)+'KB';return (n/1048576).toFixed(1)+'MB';}
     function fmtTime(ts){try{return new Date(ts*1000).toLocaleString()}catch(e){return '-'}}
     async function login(){
-      const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({username:document.getElementById('u').value,password:document.getElementById('p').value})});
+      let r;
+      try {
+        const ctrl = ('AbortController' in window) ? new AbortController() : null;
+        const timer = ctrl ? setTimeout(() => ctrl.abort(), 60000) : null;
+        r = await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({username:document.getElementById('u').value,password:document.getElementById('p').value}),
+          signal: ctrl ? ctrl.signal : undefined});
+        if (timer) clearTimeout(timer);
+      } catch(e) {
+        document.getElementById('loginErr').textContent='登录请求超时或网络错误，请重试';
+        document.getElementById('loginErr').classList.remove('hidden');
+        return;
+      }
       if(!r.ok){document.getElementById('loginErr').textContent='登录失败';document.getElementById('loginErr').classList.remove('hidden');return;}
       document.getElementById('loginBox').classList.add('hidden');
       document.getElementById('dash').classList.remove('hidden');
@@ -222,7 +233,18 @@
       };
       if(newPw) body.new_password = newPw;
 
-      const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      let r;
+      try {
+        const ctrl = ('AbortController' in window) ? new AbortController() : null;
+        const timer = ctrl ? setTimeout(() => ctrl.abort(), 60000) : null;
+        r = await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),
+          signal: ctrl ? ctrl.signal : undefined});
+        if (timer) clearTimeout(timer);
+      } catch(e) {
+        errEl.textContent = '保存请求超时或网络错误，请重试';
+        errEl.classList.remove('hidden');
+        return;
+      }
       const d=await r.json().catch(()=>({}));
       if(r.ok){
         okEl.textContent = newPw ? '已保存（密码已更新）' : '已保存';
