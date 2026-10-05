@@ -75,6 +75,47 @@
         <div id="blList" class="space-y-2 text-sm"></div>
       </div>
 
+      <div class="bg-zinc-900 rounded-2xl sm:rounded-3xl p-4 sm:p-6">
+        <h2 class="font-medium mb-1">AI 内容审核（普通大模型）</h2>
+        <p class="text-xs text-zinc-500 mb-4">用 OpenAI 兼容大模型审核文件名/标题（全量）与 ≤上限 的小文件内容（文本类提文本、图片类多模态）。宽松判断、AI 故障自动放行；拒绝不自动拉黑 SHA（防误判），记录留查。大文件内容不过服务器（直传架构），靠黑名单+举报兜底。</p>
+        <label class="flex items-center gap-2 text-sm mb-3 cursor-pointer">
+          <input id="aiEnabled" type="checkbox" class="w-5 h-5 rounded accent-violet-500" />
+          启用 AI 审核
+        </label>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
+          <label class="text-sm block">Base URL（OpenAI 兼容）
+            <input id="aiBaseUrl" class="mt-1 w-full min-h-[44px] bg-zinc-800 rounded-xl px-3 py-2.5 text-sm break-all" placeholder="https://open.bigmodel.cn/api/paas/v4" />
+          </label>
+          <label class="text-sm block">API Key
+            <input id="aiKey" type="password" autocomplete="new-password" class="mt-1 w-full min-h-[44px] bg-zinc-800 rounded-xl px-3 py-2.5 text-sm" placeholder="留空保持原值" />
+          </label>
+          <label class="text-sm block">文本模型
+            <input id="aiModel" class="mt-1 w-full min-h-[44px] bg-zinc-800 rounded-xl px-3 py-2.5 text-sm" placeholder="如 glm-4-flash / deepseek-chat" />
+          </label>
+          <label class="text-sm block">图片模型（多模态，可留空=同文本模型）
+            <input id="aiVisionModel" class="mt-1 w-full min-h-[44px] bg-zinc-800 rounded-xl px-3 py-2.5 text-sm" placeholder="如 glm-4v-flash" />
+          </label>
+          <label class="text-sm block">单文件审核上限 (MB)
+            <input id="aiMaxMb" type="number" inputmode="numeric" class="mt-1 w-full min-h-[44px] bg-zinc-800 rounded-xl px-3 py-2.5 text-sm" />
+          </label>
+          <label class="text-sm block">调用超时 (秒)
+            <input id="aiTimeout" type="number" inputmode="numeric" class="mt-1 w-full min-h-[44px] bg-zinc-800 rounded-xl px-3 py-2.5 text-sm" />
+          </label>
+        </div>
+        <div class="flex gap-2 flex-wrap">
+          <button type="button" onclick="aiSave()" class="tap min-h-[44px] px-4 py-2 bg-violet-600 active:bg-violet-500 rounded-xl text-sm">保存 AI 设置</button>
+          <button type="button" onclick="aiTest()" class="tap min-h-[44px] px-4 py-2 bg-zinc-700 active:bg-zinc-600 rounded-xl text-sm">保存并测试连通</button>
+        </div>
+        <div id="aiErr" class="text-xs text-red-400 mt-2 hidden"></div>
+        <div id="aiOk" class="text-xs text-emerald-400 mt-2 hidden"></div>
+        <h3 class="font-medium mt-5 mb-2 text-sm">审核记录（最近 200 条）</h3>
+        <div class="flex gap-2 mb-2">
+          <button type="button" onclick="loadAiReviews(false)" class="tap min-h-[36px] px-3 py-1.5 bg-zinc-800 active:bg-zinc-700 rounded-lg text-xs">全部</button>
+          <button type="button" onclick="loadAiReviews(true)" class="tap min-h-[36px] px-3 py-1.5 bg-zinc-800 active:bg-zinc-700 rounded-lg text-xs">仅拒绝</button>
+        </div>
+        <div id="aiReviewList" class="space-y-1.5 text-xs"></div>
+      </div>
+
       <div class="bg-zinc-900 rounded-2xl sm:rounded-3xl p-4 sm:p-6 space-y-4">
         <h2 class="font-medium">上传与存储设置</h2>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -206,6 +247,7 @@
       document.getElementById('adminUser').value=c.admin?.username||'admin';
       document.getElementById('adminNewPw').value='';
       document.getElementById('adminNewPw2').value='';
+      aiFill(c);
     }
     async function saveCfg(){
       const errEl=document.getElementById('saveErr');
@@ -397,6 +439,64 @@
       if(!r.ok){ const d=await r.json().catch(()=>({})); alert(d.detail||d.error||'移除失败'); return; }
       loadBlacklist();
     }
+    function aiErrMsg(m){ const e=document.getElementById('aiErr'); e.textContent=m||''; e.classList.toggle('hidden',!m); }
+    function aiOkMsg(m){ const e=document.getElementById('aiOk'); e.textContent=m||''; e.classList.toggle('hidden',!m); }
+    function aiFill(c){
+      const a=c.ai_review||{};
+      document.getElementById('aiEnabled').checked=!!a.enabled;
+      document.getElementById('aiBaseUrl').value=a.base_url||'';
+      document.getElementById('aiKey').value=a.api_key||'';
+      document.getElementById('aiKey').placeholder=a.api_key_set?'已设置（留空保持原值）':'留空保持原值';
+      document.getElementById('aiModel').value=a.model||'';
+      document.getElementById('aiVisionModel').value=a.vision_model||'';
+      document.getElementById('aiMaxMb').value=a.max_review_mb||10;
+      document.getElementById('aiTimeout').value=a.timeout||30;
+    }
+    async function aiSave(){
+      aiErrMsg(''); aiOkMsg('');
+      const body={ai_review:{
+        enabled:document.getElementById('aiEnabled').checked,
+        base_url:document.getElementById('aiBaseUrl').value.trim(),
+        api_key:document.getElementById('aiKey').value.trim(),
+        model:document.getElementById('aiModel').value.trim(),
+        vision_model:document.getElementById('aiVisionModel').value.trim(),
+        max_review_mb:Number(document.getElementById('aiMaxMb').value)||10,
+        timeout:Number(document.getElementById('aiTimeout').value)||30,
+      }};
+      const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      const d=await r.json().catch(()=>({}));
+      if(!r.ok){ aiErrMsg(d.detail||d.error||'保存失败'); return false; }
+      aiOkMsg('已保存'); loadCfg();
+      return true;
+    }
+    async function aiTest(){
+      if(!await aiSave()) return;
+      aiOkMsg('正在测试连通…');
+      const r=await fetch('/api/ai-review/test',{method:'POST'});
+      const d=await r.json().catch(()=>({}));
+      aiErrMsg(''); aiOkMsg('');
+      if(d.ok){ aiOkMsg('连通正常，模型回复：'+((d.reply&&d.reply.reason)||'ok')); }
+      else{ aiErrMsg('测试失败：'+(d.error||'未知错误')); }
+    }
+    async function loadAiReviews(rejectsOnly){
+      const r=await fetch('/api/ai-reviews'+(rejectsOnly?'?rejects_only=true':'')); if(!r.ok) return;
+      const data=await r.json();
+      const box=document.getElementById('aiReviewList'); box.innerHTML='';
+      (data.items||[]).forEach(a=>{
+        const div=document.createElement('div');
+        div.className='flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 bg-zinc-800/60 rounded-lg px-3 py-2';
+        const vc = a.verdict==='reject' ? 'text-red-400' : (a.verdict==='pass' ? 'text-emerald-400' : 'text-zinc-500');
+        const vn = a.verdict==='reject' ? '拒绝' : (a.verdict==='pass' ? '通过' : '跳过');
+        div.innerHTML=`
+          <div class="min-w-0">
+            <div class="truncate">${esc(a.file_name||'-')} <span class="text-zinc-600">[${a.kind==='filename'?'文件名':'内容'}]</span></div>
+            <div class="text-zinc-500 mt-0.5 break-all">${esc(a.reason||'-')} · ${a.created_at?fmtTime(a.created_at):''}</div>
+          </div>
+          <span class="${vc} shrink-0 font-medium">${vn}</span>`;
+        box.appendChild(div);
+      });
+      if(!(data.items||[]).length) box.innerHTML='<div class="text-zinc-500">暂无记录</div>';
+    }
     async function banPkgIp(id, ip){
       const reason = prompt('封禁 '+ip+' 的原因（可空）','危险文件') || '';
       const alsoDel = confirm('同时删除这个包裹及云盘文件？');
@@ -455,7 +555,7 @@
     }
     document.getElementById('p').addEventListener('keydown', e => { if(e.key==='Enter') login(); });
     fetch('/api/config').then(r=>{
-      if(r.ok){document.getElementById('loginBox').classList.add('hidden');document.getElementById('dash').classList.remove('hidden');loadCfg();loadPackages();loadBans();loadReports(true);loadBlacklist();}
+      if(r.ok){document.getElementById('loginBox').classList.add('hidden');document.getElementById('dash').classList.remove('hidden');loadCfg();loadPackages();loadBans();loadReports(true);loadBlacklist();loadAiReviews(false);}
     });
   </script>
 </body>

@@ -427,6 +427,27 @@
         throw new Error('中转任务创建失败：' + ((init2 && init2.error) || ('HTTP ' + initResp.status)));
       }
       try {
+        // AI 内容审核（降级中转路径）：小文件中转前先送审
+        const aiMax2 = Number(init2.ai_max_review_mb) || 0;
+        if (init2.ai_enabled && aiMax2 > 0) {
+          for (const fm of (init2.files || [])) {
+            if (fm.exist || fm.rapid) continue;
+            if ((fm.size || 0) > aiMax2 * 1024 * 1024) continue;
+            const afile = selectedFiles.find(x => x.name === fm.name && x.size === fm.size);
+            if (!afile) continue;
+            setProgress(0, 'AI 安全审核：' + fm.name + '…', 0, totalSize, '');
+            const afd = new FormData();
+            afd.append('package_id', String(init2.package_id));
+            afd.append('file_id', fm.file_id);
+            afd.append('filename', fm.name);
+            afd.append('file', afile, fm.name);
+            const ar = await fetchJSON('/api/ai-review/file', { method: 'POST', body: afd }, 120000);
+            const ad = await ar.json().catch(() => ({}));
+            if (ad.verdict === 'reject') {
+              throw new Error((fm.name || '文件') + ' 内容未通过安全审核：' + (ad.reason || '违规'));
+            }
+          }
+        }
         let uploaded = 0;
         for (const fm of (init2.files || [])) {
           if (fm.exist || fm.rapid) { uploaded += (fm.size || 0); continue; } // 秒传命中
@@ -540,7 +561,29 @@
           throw new Error(initData.error || ('创建上传任务失败 HTTP ' + initResp.status));
         }
 
-        // 3) 浏览器直传云盘：逐个分片 PUT 到预签名 URL（顺序发片，139 要求严格按序）
+        // 3) AI 内容审核：小文件(≤上限)在分片上传前先送审，reject 立即终止（零流量浪费）
+        const aiMax = Number(initData.ai_max_review_mb) || 0;
+        if (initData.ai_enabled && aiMax > 0) {
+          for (const fm of initData.files) {
+            if (fm.exist || fm.rapid) continue;
+            if ((fm.size || 0) > aiMax * 1024 * 1024) continue;
+            const afile = selectedFiles.find(x => x.name === fm.name && x.size === fm.size);
+            if (!afile) continue;
+            setProgress(0, 'AI 安全审核：' + fm.name + '…', 0, totalSize, '');
+            const afd = new FormData();
+            afd.append('package_id', String(initData.package_id));
+            afd.append('file_id', fm.file_id);
+            afd.append('filename', fm.name);
+            afd.append('file', afile, fm.name);
+            const ar = await fetchJSON('/api/ai-review/file', { method: 'POST', body: afd }, 120000);
+            const ad = await ar.json().catch(() => ({}));
+            if (ad.verdict === 'reject') {
+              throw new Error((fm.name || '文件') + ' 内容未通过安全审核：' + (ad.reason || '违规'));
+            }
+          }
+        }
+
+        // 4) 浏览器直传云盘：逐个分片 PUT 到预签名 URL（顺序发片，139 要求严格按序）
         let uploaded = 0, lastLoaded = 0, lastTs = Date.now();
         for (const fm of initData.files) {
           if (fm.exist || fm.rapid) { uploaded += fm.size; continue; } // 秒传/急速上传命中，无需上传

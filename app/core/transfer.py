@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from app import db
 from app.config_store import load_config
+from app.core import ai_review
 from app.core import storage as store
 
 logger = logging.getLogger("fts.transfer")
@@ -269,6 +270,16 @@ def init_direct_upload(
             raise TransferError(f"{pure} 缺少有效的 SHA256（直传需要）")
         if db.is_sha_blacklisted(sha):
             raise TransferError(f"{pure} 已被禁止上传（文件内容列入黑名单）", 403)
+        # AI 审核第一道：文件名/标题（未启用或调用失败自动放行）
+        ar = ai_review.review_filename(pure, title=title)
+        db.add_ai_review(
+            file_name=pure, kind="filename", verdict=ar.get("verdict", "skip"),
+            reason=ar.get("reason", ""),
+        )
+        if ar.get("verdict") == "reject":
+            raise TransferError(
+                f"{pure} 未通过安全审核：{ar.get('reason') or '内容违规'}", 403
+            )
         prepared.append(
             {
                 "name": pure,
@@ -360,6 +371,8 @@ def init_direct_upload(
         "expire_at": expire_at,
         "expire_hours": hours,
         "max_extracts": extracts,
+        "ai_enabled": ai_review.enabled(),
+        "ai_max_review_mb": ai_review.max_review_mb() if ai_review.enabled() else 0,
         "files": created_tasks,
     }
 

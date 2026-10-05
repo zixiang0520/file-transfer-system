@@ -96,6 +96,16 @@ def init_db() -> None:
                 );
                 CREATE INDEX IF NOT EXISTS idx_reports_code ON reports(extract_code);
                 CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status);
+                CREATE TABLE IF NOT EXISTS ai_reviews (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    package_id INTEGER DEFAULT 0,
+                    file_name TEXT DEFAULT '',
+                    kind TEXT DEFAULT '',
+                    verdict TEXT DEFAULT '',
+                    reason TEXT DEFAULT '',
+                    created_at REAL NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_ai_reviews_time ON ai_reviews(created_at);
                 """
             )
             con.commit()
@@ -540,5 +550,44 @@ def delete_report(report_id: int) -> bool:
             cur = con.execute("DELETE FROM reports WHERE id = ?", (int(report_id),))
             con.commit()
             return cur.rowcount > 0
+        finally:
+            con.close()
+
+
+# ---------- AI 审核记录 ----------
+
+def add_ai_review(
+    *,
+    package_id: int = 0,
+    file_name: str = "",
+    kind: str = "",
+    verdict: str = "",
+    reason: str = "",
+) -> Dict[str, Any]:
+    now = time.time()
+    with _lock:
+        con = _conn()
+        try:
+            con.execute(
+                """INSERT INTO ai_reviews (package_id, file_name, kind, verdict, reason, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (int(package_id or 0), file_name or "", kind or "", verdict or "", reason or "", now),
+            )
+            con.commit()
+            return {"ok": True}
+        finally:
+            con.close()
+
+
+def list_ai_reviews(*, limit: int = 200, rejects_only: bool = False) -> List[Dict[str, Any]]:
+    q = "SELECT * FROM ai_reviews"
+    if rejects_only:
+        q += " WHERE verdict = 'reject'"
+    q += " ORDER BY created_at DESC LIMIT ?"
+    with _lock:
+        con = _conn()
+        try:
+            rows = con.execute(q, (int(limit),)).fetchall()
+            return [dict(r) for r in rows]
         finally:
             con.close()

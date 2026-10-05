@@ -28,6 +28,7 @@ from app.config_store import (
     set_admin_password,
     verify_admin,
 )
+from app.core import ai_review
 from app.core import storage as store
 from app.core.storage import Yun139Client
 from app.core.transfer import (
@@ -67,6 +68,8 @@ app.add_middleware(GZipMiddleware, minimum_size=1024)
 # part 接口收片后立即返回 200（入队），后台 worker 按队列顺序转发 139，
 # 这样 NAS 转片 N 时浏览器已经在传片 N+1，实现"边收边转"流水线。
 PIPELINE_DIR = Path("/tmp/pipeline")
+# AI 内容审核结论缓存：(package_id, file_id) -> {verdict, reason, ts}；complete 时校验
+_ai_review_results: dict = {}
 _pipeline_state: dict = {}  # file_id -> {"queue", "worker", "dir", "pending", "error"}
 
 
@@ -326,6 +329,31 @@ async def api_config_save(request: Request, _: None = Depends(require_admin)):
 
     if "proxy" in body and isinstance(body["proxy"], dict):
         cfg["proxy"].update({k: v for k, v in body["proxy"].items() if v is not None})
+
+    if "ai_review" in body and isinstance(body["ai_review"], dict):
+        a = body["ai_review"]
+        ai_cfg = cfg.setdefault("ai_review", {})
+        if "enabled" in a:
+            ai_cfg["enabled"] = bool(a["enabled"])
+        for k in ("base_url", "model", "vision_model"):
+            if k in a and a[k] is not None:
+                ai_cfg[k] = str(a[k]).strip()
+        if "max_review_mb" in a:
+            try:
+                ai_cfg["max_review_mb"] = max(1, min(100, int(a["max_review_mb"])))
+            except (TypeError, ValueError):
+                pass
+        if "timeout" in a:
+            try:
+                ai_cfg["timeout"] = max(5, min(120, int(a["timeout"])))
+            except (TypeError, ValueError):
+                pass
+        if "api_key" in a:
+            val = a["api_key"]
+            if isinstance(val, str):
+                val = val.strip()
+                if val and "…" not in val and "..." not in val and val != "****" and not set(val) <= {"*"}:
+                    ai_cfg["api_key"] = val
 
     # 管理员账号 / 密码
     if "admin" in body and isinstance(body["admin"], dict):
@@ -861,6 +889,43 @@ def api_del_sha_blacklist(sha256: str, _: None = Depends(require_admin)):
     if not ok:
         raise HTTPException(status_code=404, detail="该 SHA 不在黑名单")
     return {"ok": True}
+
+
+@app.post("/api/ai-review/file")
+async def api_ai_review_file(
+    package_id: int = Form(...),
+    file_id: str = Form(...),
+    filename: str = Form(""),
+    file: UploadFile = File(...),
+):
+    """小文件内容审核：前端在 complete 前主动 POST 一份文件内容。
+    reject 结论会被 /complete 校验并拒绝完成上传；未启用/失败一律放行(skip)。"""
+    if not ai_review.enabled():
+        return {"ok": True, "verdict": "skip", "reason": "AI 审核未启用"}
+    fname = filename or (file.filename or "")
+    content = await file.read()
+    if len(content) > ai_review.max_review_mb() * 1024 * 1024:
+        res = {"verdict": "skip", "reason": "文件超出 AI 审核大小上限"}
+    else:
+        res = ai_review.review_content(fname, content, file.content_type or "")
+    _ai_review_results[(int(package_id), str(file_id))] = {**res, "ts": time.time()}
+    db.add_ai_review(
+        package_id=int(package_id), file_name=fname, kind="content",
+        verdict=res.get("verdict", ""), reason=res.get("reason", ""),
+    )
+    if res.get("verdict") == "reject":
+        logger.warning("ai review REJECT: pkg=%s file=%s reason=%s", package_id, fname, res.get("reason"))
+    return {"ok": True, "verdict": res.get("verdict"), "reason": res.get("reason", "")}
+
+
+@app.get("/api/ai-reviews")
+def api_list_ai_reviews(rejects_only: bool = False, _: None = Depends(require_admin)):
+    return {"items": db.list_ai_reviews(rejects_only=rejects_only)}
+
+
+@app.post("/api/ai-review/test")
+def api_ai_review_test(_: None = Depends(require_admin)):
+    return ai_review.test_connection()
 
 
 @app.post("/api/yun139/test")

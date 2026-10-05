@@ -180,6 +180,14 @@ def public_config_view() -> Dict[str, Any]:
         qq["client_secret"] = mask(qq["client_secret"])
     else:
         qq["client_secret_set"] = False
+
+    ai = cfg.get("ai_review") or {}
+    if ai.get("api_key"):
+        ai["api_key_set"] = True
+        ai["api_key"] = mask(ai["api_key"])
+    else:
+        ai["api_key_set"] = False
+    cfg["ai_review"] = ai
     return cfg
 
 
