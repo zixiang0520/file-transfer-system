@@ -54,6 +54,27 @@
         <div id="banList" class="space-y-2 text-sm"></div>
       </div>
 
+      <div class="bg-zinc-900 rounded-2xl sm:rounded-3xl p-4 sm:p-6">
+        <h2 class="font-medium mb-1">举报处理</h2>
+        <p class="text-xs text-zinc-500 mb-4">用户从提取页举报的分享。处理 = 删除包裹及云盘文件 + 拉黑文件 SHA-256（同内容永久无法再传）+ 封上传者 IP。</p>
+        <div class="flex gap-2 mb-4">
+          <button type="button" onclick="loadReports(false)" class="tap flex-1 sm:flex-none min-h-[44px] px-4 py-2 bg-zinc-800 active:bg-zinc-700 rounded-xl text-sm">刷新全部</button>
+          <button type="button" onclick="loadReports(true)" class="tap flex-1 sm:flex-none min-h-[44px] px-4 py-2 bg-zinc-800 active:bg-zinc-700 rounded-xl text-sm">只看待处理</button>
+        </div>
+        <div id="reportList" class="space-y-2 text-sm"></div>
+      </div>
+
+      <div class="bg-zinc-900 rounded-2xl sm:rounded-3xl p-4 sm:p-6">
+        <h2 class="font-medium mb-1">文件 SHA-256 黑名单</h2>
+        <p class="text-xs text-zinc-500 mb-4">黑名单中的文件内容（按 SHA-256 识别，改名无效）无法再上传。处理举报时自动添加，也可手动添加（可从包裹详情或下载文件计算获得）。</p>
+        <div class="flex flex-col sm:flex-row gap-2 mb-4">
+          <input id="blShaInput" class="flex-1 min-h-[44px] bg-zinc-800 rounded-xl px-3 py-2.5 font-mono text-xs" placeholder="64 位 SHA-256 十六进制" />
+          <input id="blReasonInput" class="flex-1 min-h-[44px] bg-zinc-800 rounded-xl px-3 py-2.5" placeholder="原因（可选）" />
+          <button type="button" onclick="addBlacklist()" class="tap min-h-[44px] px-4 py-2 bg-red-900/50 active:bg-red-900/70 rounded-xl text-sm w-full sm:w-auto">拉黑</button>
+        </div>
+        <div id="blList" class="space-y-2 text-sm"></div>
+      </div>
+
       <div class="bg-zinc-900 rounded-2xl sm:rounded-3xl p-4 sm:p-6 space-y-4">
         <h2 class="font-medium">上传与存储设置</h2>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -304,6 +325,78 @@
       });
       if(!(data.items||[]).length) box.innerHTML='<div class="text-zinc-500">暂无封禁</div>';
     }
+    async function loadReports(openOnly){
+      const r=await fetch('/api/reports'+(openOnly?'?open_only=true':'')); if(!r.ok) return;
+      const data=await r.json();
+      const box=document.getElementById('reportList'); box.innerHTML='';
+      (data.items||[]).forEach(rp=>{
+        const div=document.createElement('div');
+        div.className='flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 bg-zinc-800/70 rounded-xl px-3 py-2.5';
+        const when = rp.created_at ? fmtTime(rp.created_at) : '';
+        const st = rp.status==='open'
+          ? '<span class="text-amber-400">待处理</span>'
+          : `<span class="text-zinc-500">已${rp.action_taken?('处理('+esc(rp.action_taken)+')'):'忽略'}</span>`;
+        div.innerHTML=`
+          <div class="min-w-0">
+            <div class="font-mono break-all">${esc(rp.extract_code)} · <span class="text-zinc-400">${esc(rp.file_summary||'无文件信息')}</span></div>
+            <div class="text-xs text-zinc-500 mt-0.5">${esc(rp.reason||'未填原因')} · 举报 IP ${esc(rp.reporter_ip||'-')} · ${when} · ${st}</div>
+          </div>
+          <div class="flex gap-2 shrink-0">
+            ${rp.status==='open' ? `<a class="tap min-h-[40px] px-3 py-2 bg-zinc-700 active:bg-zinc-600 rounded-lg text-center" href="/extract?code=${encodeURIComponent(rp.extract_code)}" target="_blank">查看</a>
+            <button type="button" class="tap min-h-[40px] px-3 py-2 bg-red-900/50 active:bg-red-900/70 rounded-lg" onclick="handleReport(${rp.id})">一键处理</button>
+            <button type="button" class="tap min-h-[40px] px-3 py-2 bg-zinc-700 active:bg-zinc-600 rounded-lg" onclick="dismissReport(${rp.id})">忽略</button>` : ''}
+          </div>`;
+        box.appendChild(div);
+      });
+      if(!(data.items||[]).length) box.innerHTML='<div class="text-zinc-500">暂无举报</div>';
+    }
+    async function handleReport(id){
+      if(!confirm('确认处理：删除该包裹及云盘文件 + 拉黑文件 SHA-256 + 封上传者 IP？')) return;
+      const r=await fetch('/api/reports/'+id+'/handle',{method:'POST'});
+      const d=await r.json().catch(()=>({}));
+      if(!r.ok){ alert(d.detail||d.error||'处理失败'); return; }
+      alert('已处理：\n'+(d.actions||[]).join('\n'));
+      loadReports(false); loadPackages(); loadBans();
+    }
+    async function dismissReport(id){
+      if(!confirm('忽略这条举报？（不做任何处理）')) return;
+      const r=await fetch('/api/reports/'+id,{method:'DELETE'});
+      if(!r.ok){ const d=await r.json().catch(()=>({})); alert(d.detail||d.error||'操作失败'); return; }
+      loadReports(false);
+    }
+    async function loadBlacklist(){
+      const r=await fetch('/api/sha-blacklist'); if(!r.ok) return;
+      const data=await r.json();
+      const box=document.getElementById('blList'); box.innerHTML='';
+      (data.items||[]).forEach(b=>{
+        const div=document.createElement('div');
+        div.className='flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 bg-zinc-800/70 rounded-xl px-3 py-2.5';
+        div.innerHTML=`
+          <div class="min-w-0">
+            <div class="font-mono text-xs break-all">${esc(b.sha256)}</div>
+            <div class="text-xs text-zinc-500 mt-0.5">${esc(b.reason||'无原因')} · ${b.created_at?fmtTime(b.created_at):''} · ${esc(b.created_by||'')}</div>
+          </div>
+          <button type="button" class="tap min-h-[40px] px-3 py-2 bg-zinc-700 active:bg-zinc-600 rounded-lg shrink-0" onclick="delBlacklist('${esc(b.sha256)}')">移除</button>`;
+        box.appendChild(div);
+      });
+      if(!(data.items||[]).length) box.innerHTML='<div class="text-zinc-500">黑名单为空</div>';
+    }
+    async function addBlacklist(){
+      const sha=document.getElementById('blShaInput').value.trim().toLowerCase();
+      const reason=document.getElementById('blReasonInput').value.trim();
+      if(!/^[0-9a-f]{64}$/.test(sha)){ alert('需要 64 位 SHA-256 十六进制'); return; }
+      const r=await fetch('/api/sha-blacklist',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sha256:sha,reason})});
+      const d=await r.json().catch(()=>({}));
+      if(!r.ok){ alert(d.detail||d.error||'添加失败'); return; }
+      document.getElementById('blShaInput').value=''; document.getElementById('blReasonInput').value='';
+      loadBlacklist();
+    }
+    async function delBlacklist(sha){
+      if(!confirm('移除黑名单 '+sha.slice(0,16)+'…？')) return;
+      const r=await fetch('/api/sha-blacklist?sha256='+encodeURIComponent(sha),{method:'DELETE'});
+      if(!r.ok){ const d=await r.json().catch(()=>({})); alert(d.detail||d.error||'移除失败'); return; }
+      loadBlacklist();
+    }
     async function banPkgIp(id, ip){
       const reason = prompt('封禁 '+ip+' 的原因（可空）','危险文件') || '';
       const alsoDel = confirm('同时删除这个包裹及云盘文件？');
@@ -362,7 +455,7 @@
     }
     document.getElementById('p').addEventListener('keydown', e => { if(e.key==='Enter') login(); });
     fetch('/api/config').then(r=>{
-      if(r.ok){document.getElementById('loginBox').classList.add('hidden');document.getElementById('dash').classList.remove('hidden');loadCfg();loadPackages();loadBans();}
+      if(r.ok){document.getElementById('loginBox').classList.add('hidden');document.getElementById('dash').classList.remove('hidden');loadCfg();loadPackages();loadBans();loadReports(true);loadBlacklist();}
     });
   </script>
 </body>

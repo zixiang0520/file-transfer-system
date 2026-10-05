@@ -5,6 +5,7 @@ import asyncio
 import ipaddress
 import logging
 import os
+import re
 import shutil
 import threading
 import time
@@ -746,6 +747,120 @@ def api_unban_ip(ip: str, _: None = Depends(require_admin)):
 def api_cleanup(_: None = Depends(require_admin)):
     n = cleanup_expired()
     return {"ok": True, "cleaned": n}
+
+
+# ---------- 举报与 SHA 黑名单（防违规文件） ----------
+
+@app.post("/api/report")
+async def api_report(request: Request):
+    """公开举报入口：同 IP 对同一提取码 24 小时内限一次。"""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "需要 JSON 请求体"}, status_code=400)
+    code = str((body or {}).get("code") or "").strip().upper()
+    reason = str((body or {}).get("reason") or "").strip()[:200]
+    if not re.fullmatch(r"[A-Z0-9]{4,12}", code):
+        return JSONResponse({"error": "提取码格式无效"}, status_code=400)
+    pkg = db.get_package_by_code(code)
+    if not pkg or pkg.get("status") != "active":
+        # 不暴露存在性，一律接受
+        return {"ok": True}
+    ip = get_client_ip(request)
+    if db.has_recent_report(code, ip, hours=24):
+        return {"ok": True, "duplicate": True}
+    files = db.list_files(int(pkg["id"]))
+    summary = "、".join((f.get("original_name") or "?") for f in files[:3])
+    if len(files) > 3:
+        summary += f" 等 {len(files)} 个文件"
+    db.add_report(
+        extract_code=code,
+        package_id=int(pkg["id"]),
+        file_summary=summary,
+        reason=reason,
+        reporter_ip=ip,
+    )
+    logger.info("report received: code=%s ip=%s reason=%s", code, ip, reason[:80])
+    return {"ok": True}
+
+
+@app.get("/api/reports")
+def api_list_reports(open_only: bool = False, _: None = Depends(require_admin)):
+    return {"items": db.list_reports(open_only=open_only)}
+
+
+@app.post("/api/reports/{report_id}/handle")
+def api_handle_report(report_id: int, request: Request, _: None = Depends(require_admin)):
+    """一键处理：删包 + 拉黑包内所有文件 SHA + 封上传者 IP。"""
+    rep = db.get_report(report_id)
+    if not rep:
+        raise HTTPException(status_code=404, detail="举报不存在")
+    who = request.session.get("admin_user") or "admin"
+    actions = []
+    pkg = db.get_package_by_code(rep["extract_code"])
+    if pkg:
+        for f in db.list_files(int(pkg["id"])):
+            sha = (f.get("sha256") or "").strip().lower()
+            if re.fullmatch(r"[0-9a-f]{64}", sha) and not db.is_sha_blacklisted(sha):
+                db.add_sha_blacklist(
+                    sha,
+                    reason=f"举报处理 #{report_id}: {(rep.get('reason') or '')[:60]}",
+                    created_by=who,
+                )
+                actions.append(f"拉黑 {sha[:12]}…")
+        up_ip = (pkg.get("uploader_ip") or "").strip()
+        if up_ip and not db.is_ip_banned(up_ip):
+            db.ban_ip(up_ip, reason=f"举报处理 #{report_id}", created_by=who)
+            actions.append(f"封 IP {up_ip}")
+        try:
+            purge_package(int(pkg["id"]))
+            actions.append("已删除包及云盘文件")
+        except Exception as e:
+            logger.exception("report handle purge failed")
+            try:
+                db.delete_package(int(pkg["id"]))
+                actions.append("已删除包（云盘清理失败，可手动）")
+            except Exception:
+                pass
+    else:
+        actions.append("包不存在或已过期")
+    db.resolve_report(report_id, action_taken="; ".join(actions) or "无动作", resolved_by=who)
+    return {"ok": True, "actions": actions}
+
+
+@app.delete("/api/reports/{report_id}")
+def api_dismiss_report(report_id: int, request: Request, _: None = Depends(require_admin)):
+    rep = db.get_report(report_id)
+    if not rep:
+        raise HTTPException(status_code=404, detail="举报不存在")
+    db.resolve_report(report_id, action_taken="忽略",
+                      resolved_by=request.session.get("admin_user") or "admin")
+    return {"ok": True}
+
+
+@app.get("/api/sha-blacklist")
+def api_list_sha_blacklist(_: None = Depends(require_admin)):
+    return {"items": db.list_sha_blacklist()}
+
+
+@app.post("/api/sha-blacklist")
+async def api_add_sha_blacklist(request: Request, _: None = Depends(require_admin)):
+    body = await request.json()
+    sha = str((body or {}).get("sha256") or "").strip().lower()
+    reason = str((body or {}).get("reason") or "").strip()[:200]
+    if not re.fullmatch(r"[0-9a-f]{64}", sha):
+        raise HTTPException(status_code=400, detail="需要 64 位 SHA-256 十六进制")
+    item = db.add_sha_blacklist(sha, reason=reason,
+                                created_by=request.session.get("admin_user") or "admin")
+    return {"ok": True, "item": item}
+
+
+@app.delete("/api/sha-blacklist")
+def api_del_sha_blacklist(sha256: str, _: None = Depends(require_admin)):
+    ok = db.delete_sha_blacklist(sha256)
+    if not ok:
+        raise HTTPException(status_code=404, detail="该 SHA 不在黑名单")
+    return {"ok": True}
 
 
 @app.post("/api/yun139/test")

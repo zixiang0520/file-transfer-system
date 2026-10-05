@@ -267,6 +267,8 @@ def init_direct_upload(
             raise TransferError(f"{pure} 是空文件")
         if not re.fullmatch(r"[0-9a-f]{64}", sha):
             raise TransferError(f"{pure} 缺少有效的 SHA256（直传需要）")
+        if db.is_sha_blacklisted(sha):
+            raise TransferError(f"{pure} 已被禁止上传（文件内容列入黑名单）", 403)
         prepared.append(
             {
                 "name": pure,

@@ -75,6 +75,27 @@ def init_db() -> None:
                     created_by TEXT DEFAULT ''
                 );
                 CREATE INDEX IF NOT EXISTS idx_pkg_ip ON packages(uploader_ip);
+                CREATE TABLE IF NOT EXISTS sha_blacklist (
+                    sha256 TEXT PRIMARY KEY,
+                    reason TEXT DEFAULT '',
+                    created_at REAL NOT NULL,
+                    created_by TEXT DEFAULT ''
+                );
+                CREATE TABLE IF NOT EXISTS reports (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    extract_code TEXT NOT NULL,
+                    package_id INTEGER DEFAULT 0,
+                    file_summary TEXT DEFAULT '',
+                    reason TEXT DEFAULT '',
+                    reporter_ip TEXT DEFAULT '',
+                    created_at REAL NOT NULL,
+                    status TEXT DEFAULT 'open',
+                    action_taken TEXT DEFAULT '',
+                    resolved_by TEXT DEFAULT '',
+                    resolved_at REAL
+                );
+                CREATE INDEX IF NOT EXISTS idx_reports_code ON reports(extract_code);
+                CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status);
                 """
             )
             con.commit()
@@ -361,5 +382,163 @@ def count_packages_by_ip(ip: str) -> int:
                 "SELECT COUNT(*) AS n FROM packages WHERE uploader_ip = ?", (ip,)
             ).fetchone()
             return int(row["n"]) if row else 0
+        finally:
+            con.close()
+
+
+# ---------- SHA-256 黑名单 ----------
+
+def is_sha_blacklisted(sha256: str) -> Optional[Dict[str, Any]]:
+    sha256 = (sha256 or "").strip().lower()
+    if not sha256:
+        return None
+    with _lock:
+        con = _conn()
+        try:
+            row = con.execute(
+                "SELECT * FROM sha_blacklist WHERE sha256 = ?", (sha256,)
+            ).fetchone()
+            return dict(row) if row else None
+        finally:
+            con.close()
+
+
+def add_sha_blacklist(sha256: str, reason: str = "", created_by: str = "") -> Dict[str, Any]:
+    sha256 = (sha256 or "").strip().lower()
+    now = time.time()
+    with _lock:
+        con = _conn()
+        try:
+            con.execute(
+                "INSERT OR IGNORE INTO sha_blacklist (sha256, reason, created_at, created_by) VALUES (?, ?, ?, ?)",
+                (sha256, reason or "", now, created_by or ""),
+            )
+            con.commit()
+            row = con.execute(
+                "SELECT * FROM sha_blacklist WHERE sha256 = ?", (sha256,)
+            ).fetchone()
+            return dict(row) if row else {}
+        finally:
+            con.close()
+
+
+def list_sha_blacklist() -> List[Dict[str, Any]]:
+    with _lock:
+        con = _conn()
+        try:
+            rows = con.execute(
+                "SELECT * FROM sha_blacklist ORDER BY created_at DESC LIMIT 500"
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            con.close()
+
+
+def delete_sha_blacklist(sha256: str) -> bool:
+    sha256 = (sha256 or "").strip().lower()
+    with _lock:
+        con = _conn()
+        try:
+            cur = con.execute("DELETE FROM sha_blacklist WHERE sha256 = ?", (sha256,))
+            con.commit()
+            return cur.rowcount > 0
+        finally:
+            con.close()
+
+
+# ---------- 举报 ----------
+
+def add_report(
+    *,
+    extract_code: str,
+    package_id: int = 0,
+    file_summary: str = "",
+    reason: str = "",
+    reporter_ip: str = "",
+) -> Dict[str, Any]:
+    now = time.time()
+    with _lock:
+        con = _conn()
+        try:
+            cur = con.execute(
+                """INSERT INTO reports
+                   (extract_code, package_id, file_summary, reason, reporter_ip, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (extract_code, int(package_id or 0), file_summary or "", reason or "",
+                 reporter_ip or "", now),
+            )
+            con.commit()
+            row = con.execute("SELECT * FROM reports WHERE id = ?", (cur.lastrowid,)).fetchone()
+            return dict(row) if row else {}
+        finally:
+            con.close()
+
+
+def has_recent_report(extract_code: str, reporter_ip: str, hours: int = 24) -> bool:
+    extract_code = (extract_code or "").strip().upper()
+    reporter_ip = (reporter_ip or "").strip()
+    if not extract_code or not reporter_ip:
+        return False
+    since = time.time() - hours * 3600
+    with _lock:
+        con = _conn()
+        try:
+            row = con.execute(
+                """SELECT 1 FROM reports
+                   WHERE extract_code = ? AND reporter_ip = ? AND created_at >= ?
+                   LIMIT 1""",
+                (extract_code, reporter_ip, since),
+            ).fetchone()
+            return bool(row)
+        finally:
+            con.close()
+
+
+def list_reports(*, open_only: bool = False, limit: int = 200) -> List[Dict[str, Any]]:
+    q = "SELECT * FROM reports"
+    if open_only:
+        q += " WHERE status = 'open'"
+    q += " ORDER BY created_at DESC LIMIT ?"
+    with _lock:
+        con = _conn()
+        try:
+            rows = con.execute(q, (int(limit),)).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            con.close()
+
+
+def get_report(report_id: int) -> Optional[Dict[str, Any]]:
+    with _lock:
+        con = _conn()
+        try:
+            row = con.execute("SELECT * FROM reports WHERE id = ?", (int(report_id),)).fetchone()
+            return dict(row) if row else None
+        finally:
+            con.close()
+
+
+def resolve_report(report_id: int, *, action_taken: str, resolved_by: str) -> bool:
+    with _lock:
+        con = _conn()
+        try:
+            cur = con.execute(
+                """UPDATE reports SET status='resolved', action_taken=?, resolved_by=?, resolved_at=?
+                   WHERE id=?""",
+                (action_taken or "", resolved_by or "", time.time(), int(report_id)),
+            )
+            con.commit()
+            return cur.rowcount > 0
+        finally:
+            con.close()
+
+
+def delete_report(report_id: int) -> bool:
+    with _lock:
+        con = _conn()
+        try:
+            cur = con.execute("DELETE FROM reports WHERE id = ?", (int(report_id),))
+            con.commit()
+            return cur.rowcount > 0
         finally:
             con.close()
