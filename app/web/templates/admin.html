@@ -13,14 +13,33 @@
     input, select, textarea, button { font-size: 16px; }
     .tap { -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
     .field { @apply mt-1 w-full min-h-[44px] bg-zinc-800 rounded-xl px-3 py-2.5; }
+    .navtab { min-height: 40px; padding: 0 14px; border-radius: 12px; color: #a1a1aa; white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; }
+    .navtab.active { background: #27272a; color: #fff; }
+    .sec { scroll-margin-top: 118px; }
+    html { scroll-behavior: smooth; }
   </style>
 </head>
 <body class="bg-zinc-950 text-white min-h-screen min-h-[100dvh]">
   <div class="max-w-5xl mx-auto px-4 sm:px-6 py-4 sm:py-6">
-    <header class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between mb-5 sm:mb-6">
-      <h1 class="text-xl sm:text-2xl font-bold">管理后台</h1>
-      <a href="/" class="tap text-sm text-zinc-400 active:text-white min-h-[44px] inline-flex items-center">← 返回前台</a>
-    </header>
+    <div id="topBar" class="sticky top-0 z-20 -mx-4 sm:-mx-6 px-4 sm:px-6 bg-zinc-950/95 backdrop-blur border-b border-zinc-800">
+      <header class="flex items-center justify-between gap-3 py-2.5 sm:py-3">
+        <h1 class="text-lg sm:text-xl font-bold shrink-0">管理后台</h1>
+        <div class="flex items-center gap-1.5 sm:gap-2 min-w-0">
+          <div id="hdrActions" class="hidden items-center gap-1.5 sm:gap-2">
+            <button type="button" onclick="refreshPackages()" title="刷新包裹" class="tap min-h-[40px] min-w-[40px] px-3 py-2 bg-zinc-800 active:bg-zinc-700 rounded-xl text-sm"><i class="fa-solid fa-arrows-rotate"></i><span class="hidden md:inline ml-1.5">刷新包裹</span></button>
+            <button type="button" onclick="cleanup()" title="清理过期" class="tap min-h-[40px] min-w-[40px] px-3 py-2 bg-zinc-800 active:bg-zinc-700 rounded-xl text-sm"><i class="fa-solid fa-broom"></i><span class="hidden md:inline ml-1.5">清理过期</span></button>
+            <button type="button" onclick="logout()" title="退出登录" class="tap min-h-[40px] min-w-[40px] px-3 py-2 bg-red-900/40 active:bg-red-900/60 rounded-xl text-sm text-red-300"><i class="fa-solid fa-right-from-bracket"></i><span class="hidden md:inline ml-1.5">退出</span></button>
+          </div>
+          <a id="hdrHome" href="/" class="tap text-sm text-zinc-400 active:text-white min-h-[40px] inline-flex items-center gap-1.5"><i class="fa-solid fa-arrow-left text-xs"></i><span class="hidden sm:inline">返回前台</span></a>
+        </div>
+      </header>
+      <nav id="tabNav" class="hidden gap-1 overflow-x-auto pb-2 text-sm -mb-px">
+        <button type="button" class="navtab tap" data-g="pkg" onclick="jumpTo('pkg')"><i class="fa-solid fa-box-archive text-xs"></i>包裹</button>
+        <button type="button" class="navtab tap" data-g="security" onclick="jumpTo('security')"><i class="fa-solid fa-shield-halved text-xs"></i>安全</button>
+        <button type="button" class="navtab tap" data-g="ai" onclick="jumpTo('ai')"><i class="fa-solid fa-robot text-xs"></i>AI 审核</button>
+        <button type="button" class="navtab tap" data-g="settings" onclick="jumpTo('settings')"><i class="fa-solid fa-gear text-xs"></i>存储与设置</button>
+      </nav>
+    </div>
 
     <!-- Login -->
     <div id="loginBox" class="bg-zinc-900 rounded-2xl sm:rounded-3xl p-5 sm:p-6 max-w-md mx-auto sm:mx-0 w-full">
@@ -31,14 +50,8 @@
       <p id="loginErr" class="text-red-400 text-sm mt-3 hidden"></p>
     </div>
 
-    <div id="dash" class="hidden space-y-5 sm:space-y-6">
-      <div class="flex gap-2 sm:gap-3 flex-wrap">
-        <button type="button" onclick="refreshPackages()" class="tap flex-1 sm:flex-none min-h-[44px] px-4 py-2 bg-zinc-800 active:bg-zinc-700 rounded-xl text-sm">刷新包裹</button>
-        <button type="button" onclick="cleanup()" class="tap flex-1 sm:flex-none min-h-[44px] px-4 py-2 bg-zinc-800 active:bg-zinc-700 rounded-xl text-sm">清理过期</button>
-        <button type="button" onclick="logout()" class="tap flex-1 sm:flex-none min-h-[44px] px-4 py-2 bg-red-900/40 active:bg-red-900/60 rounded-xl text-sm">退出</button>
-      </div>
-
-      <div class="bg-zinc-900 rounded-2xl sm:rounded-3xl p-4 sm:p-6">
+    <div id="dash" class="hidden space-y-5 sm:space-y-6 mt-5 sm:mt-6">
+      <div id="sec-pkg" data-group="pkg" class="sec bg-zinc-900 rounded-2xl sm:rounded-3xl p-4 sm:p-6">
         <button type="button" onclick="togglePkg()" class="tap w-full flex items-center justify-between gap-3 text-left min-h-[44px]">
           <span class="font-medium">提取码 / 包裹管理<span id="pkgCount" class="text-xs text-zinc-500 font-normal ml-2"></span></span>
           <span class="text-zinc-400 text-sm shrink-0"><span id="pkgToggleText">展开</span> <i id="pkgChevron" class="fa-solid fa-chevron-down text-xs ml-1"></i></span>
@@ -53,7 +66,7 @@
         </div>
       </div>
 
-      <div class="bg-zinc-900 rounded-2xl sm:rounded-3xl p-4 sm:p-6">
+      <div id="sec-ban" data-group="security" class="sec bg-zinc-900 rounded-2xl sm:rounded-3xl p-4 sm:p-6">
         <h2 class="font-medium mb-1">IP 封禁</h2>
         <p class="text-xs text-zinc-500 mb-4">发现恶意/危险文件后，在包裹上点「封禁 IP」，或在此手动添加。被封 IP 无法再上传。</p>
         <div class="flex flex-col sm:flex-row gap-2 mb-4">
@@ -64,7 +77,7 @@
         <div id="banList" class="space-y-2 text-sm"></div>
       </div>
 
-      <div class="bg-zinc-900 rounded-2xl sm:rounded-3xl p-4 sm:p-6">
+      <div id="sec-reports" data-group="security" class="sec bg-zinc-900 rounded-2xl sm:rounded-3xl p-4 sm:p-6">
         <h2 class="font-medium mb-1">举报处理</h2>
         <p class="text-xs text-zinc-500 mb-4">用户从提取页举报的分享。处理 = 删除包裹及云盘文件 + 拉黑文件 SHA-256（同内容永久无法再传）+ 封上传者 IP。</p>
         <div class="flex gap-2 mb-4">
@@ -74,7 +87,7 @@
         <div id="reportList" class="space-y-2 text-sm"></div>
       </div>
 
-      <div class="bg-zinc-900 rounded-2xl sm:rounded-3xl p-4 sm:p-6">
+      <div id="sec-bl" data-group="security" class="sec bg-zinc-900 rounded-2xl sm:rounded-3xl p-4 sm:p-6">
         <h2 class="font-medium mb-1">文件 SHA-256 黑名单</h2>
         <p class="text-xs text-zinc-500 mb-4">黑名单中的文件内容（按 SHA-256 识别，改名无效）无法再上传。处理举报时自动添加，也可手动添加（可从包裹详情或下载文件计算获得）。</p>
         <div class="flex flex-col sm:flex-row gap-2 mb-4">
@@ -85,7 +98,7 @@
         <div id="blList" class="space-y-2 text-sm"></div>
       </div>
 
-      <div class="bg-zinc-900 rounded-2xl sm:rounded-3xl p-4 sm:p-6">
+      <div id="sec-ai" data-group="ai" class="sec bg-zinc-900 rounded-2xl sm:rounded-3xl p-4 sm:p-6">
         <h2 class="font-medium mb-1">AI 内容审核（普通大模型）</h2>
         <p class="text-xs text-zinc-500 mb-4">用 OpenAI 兼容大模型审核文件名/标题（全量）与 ≤上限 的小文件内容（文本类提文本、图片类多模态）。宽松判断、AI 故障自动放行；拒绝不自动拉黑 SHA（防误判），记录留查。大文件内容不过服务器（直传架构），靠黑名单+举报兜底。</p>
         <label class="flex items-center gap-2 text-sm mb-3 cursor-pointer">
@@ -126,7 +139,7 @@
         <div id="aiReviewList" class="space-y-1.5 text-xs"></div>
       </div>
 
-      <div class="bg-zinc-900 rounded-2xl sm:rounded-3xl p-4 sm:p-6 space-y-4">
+      <div id="sec-settings" data-group="settings" class="sec bg-zinc-900 rounded-2xl sm:rounded-3xl p-4 sm:p-6 space-y-4">
         <h2 class="font-medium">上传与存储设置</h2>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <label class="text-sm block">单文件上限 (MB)
@@ -317,6 +330,39 @@
   <script>
     function fmtSize(n){n=Number(n)||0;if(n<1024)return n+'B';if(n<1048576)return (n/1024).toFixed(1)+'KB';return (n/1048576).toFixed(1)+'MB';}
     function fmtTime(ts){try{return new Date(ts*1000).toLocaleString()}catch(e){return '-'}}
+    // —— 顶部导航栏 ——
+    const NAV_GROUPS = ['pkg','security','ai','settings'];
+    function jumpTo(g){
+      const sec = document.querySelector('#dash [data-group="'+g+'"]');
+      if (!sec) return;
+      setActiveTab(g);
+      sec.scrollIntoView({behavior:'smooth', block:'start'});
+    }
+    function setActiveTab(g){
+      document.querySelectorAll('#tabNav .navtab').forEach(b=>{
+        b.classList.toggle('active', b.dataset.g===g);
+      });
+    }
+    let navTick = false;
+    window.addEventListener('scroll', ()=>{
+      if (navTick) return; navTick = true;
+      requestAnimationFrame(()=>{
+        navTick = false;
+        const dash = document.getElementById('dash');
+        if (!dash || dash.classList.contains('hidden')) return;
+        let cur = NAV_GROUPS[0];
+        document.querySelectorAll('#dash .sec[data-group]').forEach(sec=>{
+          if (sec.getBoundingClientRect().top <= 150) cur = sec.dataset.group;
+        });
+        setActiveTab(cur);
+      });
+    }, {passive:true});
+    function showNav(){
+      document.getElementById('tabNav').classList.remove('hidden');
+      const ha = document.getElementById('hdrActions');
+      ha.classList.remove('hidden'); ha.classList.add('flex');
+      setActiveTab('pkg');
+    }
     async function login(){
       let r;
       try {
@@ -334,6 +380,7 @@
       if(!r.ok){document.getElementById('loginErr').textContent='登录失败';document.getElementById('loginErr').classList.remove('hidden');return;}
       document.getElementById('loginBox').classList.add('hidden');
       document.getElementById('dash').classList.remove('hidden');
+      showNav();
       await loadCfg(); await loadPkgCount(); await loadBans();
     }
     async function logout(){await fetch('/api/logout',{method:'POST'}); location.reload();}
@@ -870,7 +917,7 @@
     document.getElementById('pkgSearch').addEventListener('keydown', e => { if(e.key==='Enter'){ e.preventDefault(); loadPackages(0); } });
     document.getElementById('pkgSearch').addEventListener('input', e => { if(!e.target.value.trim()) loadPackages(0); });
     fetch('/api/config').then(r=>{
-      if(r.ok){document.getElementById('loginBox').classList.add('hidden');document.getElementById('dash').classList.remove('hidden');loadCfg();loadPkgCount();loadBans();loadReports(true);loadBlacklist();loadAiReviews(false);}
+      if(r.ok){document.getElementById('loginBox').classList.add('hidden');document.getElementById('dash').classList.remove('hidden');showNav();loadCfg();loadPkgCount();loadBans();loadReports(true);loadBlacklist();loadAiReviews(false);}
     });
   </script>
 </body>
