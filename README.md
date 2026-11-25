@@ -118,6 +118,18 @@ docker compose up -d --build
 
 公网地址在后台填 **公网地址**（`site.public_base_url`）。
 
+### 部署到 arm64 NAS（飞牛 fnos 等）
+
+NAS 多为 aarch64，开发机多为 x86_64，直接在 NAS 上 `--build` 容易在拉取依赖阶段失败，
+且跨架构镜像会报 `exec format error`。用内置脚本在开发机构建 arm64 镜像再导入：
+
+```bash
+./scripts/deploy-nas.sh              # 构建 + 同步源码 + 导入镜像 + 重建容器
+./scripts/deploy-nas.sh --no-source  # 只发版镜像
+```
+
+详见 [docs/DEPLOY.md 第 5 节](docs/DEPLOY.md)。
+
 ## 配置项
 
 运行时：`data/config.json`（gitignore；也可后台改）。
@@ -167,6 +179,7 @@ file-transfer-system/
 ├── Dockerfile / docker-compose.yml
 ├── docs/DEPLOY.md
 ├── scripts/refresh-139.sh    # 定时校验云盘鉴权
+├── scripts/deploy-nas.sh     # 一键部署到 arm64 NAS（交叉构建 + 导入 + 重建）
 ├── app/
 │   ├── config_store.py
 │   ├── core/
@@ -188,6 +201,7 @@ file-transfer-system/
 | `认证失败(05050006)` | 配齐 Cookie+账密后点测试连接；或更新 Authorization |
 | 测试连接提示缺 RMKEY | Cookie 不完整，从 mail.10086.cn 重新复制整段 Cookie |
 | 上传 413 | 反代 `client_max_body_size` 过小 |
+| 容器重启、日志见 `exec format error` | 镜像架构与 NAS 不符，用 `--platform linux/arm64` 重建（见 DEPLOY 第 5 节） |
 | 服务挂了 | `systemctl status file-transfer-system` / `Restart=always` |
 
 ## 许可证

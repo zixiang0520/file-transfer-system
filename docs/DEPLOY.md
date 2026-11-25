@@ -127,7 +127,95 @@ docker run -d --name file-transfer-system \
   file-transfer-system:latest
 ```
 
-## 5. 本机 Python + systemd（无 Docker）
+## 5. 远程部署到飞牛 NAS（fnos / ARM64）
+
+NAS 通常是 **aarch64**，而开发机多为 **x86_64**。直接 `docker compose up -d --build` 有两个坑：
+
+1. 交叉架构：在 x86 机器上构建出的镜像到 NAS 上启动会直接报
+   `exec /entrypoint.sh: exec format error`。
+2. NAS 直连 Docker Hub / PyPI 不稳定，`--build` 常在 `pip install` 阶段失败。
+
+因此推荐**在开发机构建 arm64 镜像 → 导入 NAS → 只重建容器**。仓库内置脚本封装了全流程：
+
+```bash
+# 全流程：交叉构建 + 同步源码 + 导入镜像 + 重建容器 + 健康校验
+./scripts/deploy-nas.sh
+
+# 只换镜像不改源码（快速发版）
+./scripts/deploy-nas.sh --no-source
+
+# 复用上次构建的镜像包，跳过构建
+./scripts/deploy-nas.sh --no-build
+```
+
+脚本用到的可配置环境变量（都有默认值，按需覆盖）：
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `NAS_HOST` | `nas.zx.al` | NAS 地址 |
+| `NAS_PORT` | `5666` | fnos 服务端口 |
+| `NAS_APP_DIR` | `/vol1/1000/docker/file-transfer-system` | NAS 上的部署目录 |
+| `NAS_TMP_DIR` | `/vol1/1000/uploads` | NAS 上的中转目录 |
+| `TARGET_PLATFORM` | `linux/arm64` | NAS 架构；x86 NAS 改 `linux/amd64` |
+| `HEALTH_URL` | `http://<NAS_HOST>:8790/health` | 健康检查地址 |
+| `FNOS_CLI` | 自动探测 | `fnos-cli` 可执行文件路径 |
+
+依赖：`docker`（含 buildx）、`curl`、`fnos-cli`。
+
+### 关键技术点
+
+- **必须显式 `--platform`**：脚本按 `TARGET_PLATFORM` 交叉构建。x86 开发机首次跨架构构建需要 QEMU，脚本会自动尝试注册 binfmt；失败时手工执行：
+  ```bash
+  docker run --privileged --rm tonistiigi/binfmt --install arm64
+  ```
+- **构建必须带 `--provenance=false --sbom=false`**：否则 `docker save` 产出带 attestation 的
+  manifest list，老版本 dockerd `docker load` 后可能选中错误平台条目，同样报
+  `exec format error`。
+- **镜像导入与 compose 重建在 NAS 端执行**：`fnos-cli` 的 `docker container` 没有 `exec` / `logs`
+  子命令，脚本借用 `docker.fnnas.com/library/docker:cli` 镜像挂载 `docker.sock` 起一次性容器完成。
+- **重建时绝不加 `--build`**：镜像已由 `docker load` 导入，compose 只做容器重建。
+- **源码同步不会覆盖运行时数据**：`data/`、`storage/`、`logs/` 被显式排除，SQLite 与配置保持不变。
+
+### 手工等价步骤
+
+脚本出问题时可逐步手工执行：
+
+```bash
+# 1. 构建 arm64 镜像并导出 tar
+docker buildx build --platform linux/arm64 --provenance=false --sbom=false \
+  -t file-transfer-system:latest \
+  --output type=docker,dest=/tmp/fts-arm64.tar .
+
+# 2. 上传镜像
+fnos-cli file upload /vol1/1000/uploads /tmp/fts-arm64.tar --overwrite replace --yes
+
+# 3. 在 NAS 上 docker load（借一次性容器）
+#    需要挂载 /var/run/docker.sock、/vol1/1000/uploads 和部署目录
+#    命令：load -i /uploads/fts-arm64.tar  →  再 tag 成 file-transfer-system:latest
+
+# 4. 重建容器（注意不要带 --build）
+docker compose -f /vol1/1000/docker/file-transfer-system/docker-compose.yml \
+  --project-directory /vol1/1000/docker/file-transfer-system up -d
+
+# 5. 验证
+curl http://<NAS_HOST>:8790/health
+```
+
+### 排障：容器反复重启且 `ExitCode 255`
+
+```bash
+docker logs --tail 50 file-transfer-system
+```
+
+如果看到 `exec /entrypoint.sh: exec format error`，就是**镜像架构与 NAS 不匹配**，
+用上面的 `--platform` 重建即可。确认镜像架构：
+
+```bash
+docker image inspect file-transfer-system:latest --format '{{.Os}}/{{.Architecture}}'
+# NAS 上应输出 linux/arm64
+```
+
+## 6. 本机 Python + systemd（无 Docker）
 
 ```bash
 cd /opt/file-transfer-system   # 或你的路径
@@ -169,7 +257,7 @@ chmod +x scripts/refresh-139.sh
 0 0 * * * /opt/file-transfer-system/scripts/refresh-139.sh >> /opt/file-transfer-system/logs/139-refresh.log 2>&1
 ```
 
-## 6. 数据持久化（重要）
+## 7. 数据持久化（重要）
 | 挂载点 / 目录 | 内容 |
 |--------|------|
 | `data/` → `/app/data` | `config.json`（含云盘凭证）、SQLite `transfers.db` |
@@ -187,7 +275,7 @@ docker compose up -d
 # git pull && systemctl restart file-transfer-system
 ```
 
-## 7. 环境变量
+## 8. 环境变量
 | 变量 | 默认 | 说明 |
 |------|------|------|
 | `FTS_HOST` | `0.0.0.0` | 监听地址 |
@@ -196,7 +284,7 @@ docker compose up -d
 
 业务配置（限额、云盘、管理员）在 **`data/config.json`** / 管理后台，不靠环境变量。
 
-## 8. 反向代理（HTTPS 推荐）
+## 9. 反向代理（HTTPS 推荐）
 ### Caddy 示例
 ```caddy
 transfer.example.com {
@@ -226,7 +314,7 @@ server {
 
 反代后后台把 **公网地址** 设为 `https://transfer.example.com`。
 
-## 9. 健康检查
+## 10. 健康检查
 ```bash
 curl -fsS http://127.0.0.1:8790/health
 # {"ok":true,"service":"file-transfer-system"}
@@ -234,7 +322,7 @@ curl -fsS http://127.0.0.1:8790/health
 
 Compose / Dockerfile 已内置 healthcheck。
 
-## 10. 常用运维
+## 11. 常用运维
 ```bash
 # Docker
 docker compose ps
@@ -247,7 +335,7 @@ journalctl -u file-transfer-system -n 100 --no-pager
 systemctl restart file-transfer-system
 ```
 
-## 11. 安全清单
+## 12. 安全清单
 1. 改默认管理员密码（后台）
 2. 不要把 `data/config.json` 提交 Git / 打进镜像
 3. 公网用 HTTPS 反代；防火墙只放行 80/443 或指定端口
@@ -256,7 +344,7 @@ systemctl restart file-transfer-system
 6. 云盘鉴权只用后台配置（Cookie+账密 或 Authorization），勿明文进仓库
 7. 根目录可用显示路径 `/文件流转`（自动解析 parentFileId）
 
-## 12. 故障排查
+## 13. 故障排查
 | 现象 | 处理 |
 |------|------|
 | 容器起不来 | `docker compose logs`；检查端口占用 |
@@ -268,7 +356,7 @@ systemctl restart file-transfer-system
 | 测试连接缺 RMKEY | Cookie 不完整，从 mail.10086.cn 重新复制整段 |
 | 服务进程挂了 | systemd `Restart=always`；查 `journalctl -u file-transfer-system` |
 
-## 13. 镜像推送到仓库（可选）
+## 14. 镜像推送到仓库（可选）
 ```bash
 docker tag file-transfer-system:latest ghcr.io/<你的用户名>/file-transfer-system:latest
 docker push ghcr.io/<你的用户名>/file-transfer-system:latest
