@@ -732,8 +732,8 @@ def api_download(code: str, file_id: int, request: Request):
             def _destroy():
                 try:
                     purge_package(pid)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning("destroy pkg=%s failed: %s", pid, e)
 
             bg = BackgroundTask(_destroy)
 
@@ -788,8 +788,8 @@ def api_download_all(code: str):
             def _destroy():
                 try:
                     purge_package(pkg_id)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning("destroy pkg=%s failed: %s", pkg_id, e)
 
             bg = BackgroundTask(_destroy)
         return StreamingResponse(
@@ -819,8 +819,8 @@ def api_download_selected(code: str, ids: str = ""):
             def _destroy():
                 try:
                     purge_package(pkg_id)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning("destroy pkg=%s failed: %s", pkg_id, e)
 
             bg = BackgroundTask(_destroy)
         return StreamingResponse(
@@ -867,8 +867,11 @@ def api_packages(
 
 @app.delete("/api/packages/{package_id}")
 def api_delete_package(package_id: int, _: None = Depends(require_admin)):
-    purge_package(package_id)
-    return {"ok": True}
+    try:
+        res = purge_package(package_id)
+    except TransferError as e:
+        return JSONResponse({"error": e.message}, status_code=e.code)
+    return {"ok": True, "skipped": (res or {}).get("skipped") or []}
 
 
 @app.post("/api/packages/batch")
@@ -964,14 +967,21 @@ async def api_ban_package_ip(
     who = request.session.get("admin_user") or "admin"
     rec = db.ban_ip(ip, reason=reason, created_by=who)
     deleted = False
+    warning = ""
     if body.get("delete_package"):
-        purge_package(package_id)
-        deleted = True
+        try:
+            purge_package(package_id)
+            deleted = True
+        except TransferError as e:
+            # IP 已经封禁成功，这里只是包裹没删掉——不要把整体操作报成失败
+            warning = f"包裹删除失败：{e.message}"
+            logger.warning("ban_ip purge failed pkg=%s: %s", package_id, e.message)
     return {
         "ok": True,
         "ip": rec.get("ip") or ip,
         "reason": rec.get("reason") or reason,
         "deleted_package": deleted,
+        "warning": warning,
         "upload_count": db.count_packages_by_ip(ip),
     }
 

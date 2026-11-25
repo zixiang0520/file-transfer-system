@@ -655,14 +655,18 @@ class Yun139Client:
 
         return url, gen(), cl
 
-    def delete_file(self, file_id: str) -> None:
+    def delete_file(self, file_id: str) -> bool:
+        """移入 139 回收站。返回是否成功——失败必须让上层知道，
+        否则 DB 记录删了、云端文件还在，就成了永久孤儿。"""
         if not file_id:
-            return
+            return True
         try:
             self.require()
             self.personal_post("/recyclebin/batchTrash", {"fileIds": [file_id]})
+            return True
         except Exception as e:
             logger.warning("yun139 delete failed %s: %s", file_id, e)
+            return False
 
 
 def _remote_id_from_meta(storage_path: str, remote_id: str = "") -> str:
@@ -872,34 +876,38 @@ def stream_file(
         raise _as_storage_error(e) from e
 
 
-def delete_file(backend: str, storage_path: str, remote_id: str = "") -> None:
+def delete_file(backend: str, storage_path: str, remote_id: str = "") -> bool:
+    """删除后端物理文件。返回 True=已删除（含无需删除），False=删除失败。"""
     if (storage_path or "").startswith("local://") or (backend or "").lower() == "local":
         from app.core.localstore import LocalStorageClient
 
         try:
             LocalStorageClient().delete(_backend_path(storage_path, remote_id))
+            return True
         except Exception as e:
             logger.warning("local delete failed: %s", e)
-        return
+            return False
     if (storage_path or "").startswith("openlist://") or (backend or "").lower() == "openlist":
         from app.core.openlist import OpenListClient
 
         try:
             OpenListClient().delete(_backend_path(storage_path, remote_id))
+            return True
         except Exception as e:
             logger.warning("openlist delete failed: %s", e)
-        return
+            return False
     if (storage_path or "").startswith("webdav://") or (backend or "").lower() == "webdav":
         from app.core.webdav import WebDAVClient
 
         try:
             WebDAVClient().delete(_backend_path(storage_path, remote_id))
+            return True
         except Exception as e:
             logger.warning("webdav delete failed: %s", e)
-        return
+            return False
     fid = _remote_id_from_meta(storage_path, remote_id)
     if not fid:
-        return
+        return True
     if storage_path and not storage_path.startswith("yun139://") and "/" in storage_path and not remote_id:
         try:
             from pathlib import Path
@@ -908,9 +916,9 @@ def delete_file(backend: str, storage_path: str, remote_id: str = "") -> None:
             if p.exists() and p.is_file():
                 p.unlink()
         except Exception:
-            pass
-        return
-    Yun139Client().delete_file(fid)
+            return False
+        return True
+    return bool(Yun139Client().delete_file(fid))
 
 
 def put_part(upload_url: str, content, part_size: int) -> None:

@@ -243,6 +243,29 @@ def get_file(file_id: int) -> Optional[Dict[str, Any]]:
             con.close()
 
 
+def count_file_refs(remote_id: str, exclude_package: int = 0) -> int:
+    """还有多少「其他包裹」的文件行引用同一个物理文件。
+
+    秒传/急速上传命中时，多个包裹指向云端同一个 fileId；删掉它会让其他包裹
+    的下载全部 404，所以清理前必须查一下引用数。
+    """
+    rid = (remote_id or "").strip()
+    if not rid:
+        return 0
+    with _lock:
+        con = _conn()
+        try:
+            row = con.execute(
+                """SELECT COUNT(*) FROM files
+                   WHERE package_id != ?
+                     AND (remote_id = ? OR storage_path = ? OR storage_path = ?)""",
+                (int(exclude_package or 0), rid, rid, f"yun139://{rid}"),
+            ).fetchone()
+            return int(row[0] or 0) if row else 0
+        finally:
+            con.close()
+
+
 def bump_download(package_id: int) -> int:
     """Increment download/extract count; return new count."""
     with _lock:

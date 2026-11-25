@@ -688,26 +688,57 @@ def _zip_files(pkg: Dict[str, Any], files: List[Dict[str, Any]]) -> Tuple[bytes,
     return buf.getvalue(), name, should_destroy, pkg_id
 
 
-def purge_package(package_id: int) -> None:
-    result = db.delete_package(package_id) or {"files": []}
-    for f in result.get("files") or []:
-        store.delete_file(
-            f.get("storage_backend") or "yun139",
-            f.get("storage_path") or "",
-            f.get("remote_id") or "",
+def purge_package(package_id: int, force: bool = False) -> Dict[str, Any]:
+    """删除包裹：先删存储、成功后再删 DB 记录。
+
+    两个关键点：
+      1. 顺序——物理文件删失败时保留 DB 记录，用户可重试；反过来会留下
+         没人知道的孤儿文件，永久占用云盘空间。
+      2. 秒传共享——同一份内容被多个包裹秒传命中时，139 侧是同一个 fileId。
+         删掉它会让其他包裹的下载全部 404，所以仍被别的包裹引用时只删记录、
+         不动物理文件（force=True 可强制清理）。
+    """
+    files = db.list_files(package_id)
+    if not files:
+        db.delete_package(package_id)
+        return {"deleted": True, "skipped": [], "errors": []}
+
+    skipped: List[str] = []
+    errors: List[str] = []
+    for f in files:
+        remote = (f.get("remote_id") or "").strip()
+        if not force and remote and db.count_file_refs(remote, exclude_package=package_id) > 0:
+            skipped.append(remote)
+            continue
+        try:
+            ok = store.delete_file(
+                f.get("storage_backend") or "yun139",
+                f.get("storage_path") or "",
+                remote,
+            )
+        except Exception as e:  # 后端异常一律视为失败，保留记录
+            logger.warning("purge storage error pkg=%s remote=%s: %s", package_id, remote, e)
+            ok = False
+        if not ok:
+            errors.append(remote or (f.get("storage_path") or ""))
+
+    if errors:
+        raise TransferError(
+            f"存储删除失败（{len(errors)} 个文件），包裹记录已保留，可稍后重试", 502
         )
+    db.delete_package(package_id)
+    return {"deleted": True, "skipped": skipped, "errors": []}
 
 
 def cleanup_expired() -> int:
+    """清理到期包裹。失败的不标记 expired，下一轮（5 分钟）自动重试。"""
     expired = db.list_expired()
     n = 0
     for pkg in expired:
         try:
             purge_package(int(pkg["id"]))
             n += 1
-        except Exception:
-            try:
-                db.mark_expired(int(pkg["id"]))
-            except Exception:
-                pass
+        except Exception as e:
+            # 不 mark_expired：让它保持 active 以便下轮重试，否则孤儿文件会永久残留
+            logger.warning("cleanup failed pkg=%s: %s", pkg.get("id"), e)
     return n

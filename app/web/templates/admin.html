@@ -62,16 +62,19 @@
             <button type="button" onclick="loadPackages(0)" class="tap min-h-[44px] px-4 py-2 bg-zinc-800 active:bg-zinc-700 rounded-xl text-sm">搜索</button>
           </div>
           <div id="pkgBulk" class="hidden mb-3">
-            <div class="flex flex-wrap items-center gap-2 text-xs bg-zinc-800/60 rounded-xl px-3 py-2">
-              <label class="flex items-center gap-1.5 cursor-pointer select-none min-h-[36px]">
-                <input type="checkbox" id="pkgAll" onchange="selectAllPkgs(this.checked)" class="w-4 h-4 accent-violet-500" />
-                全选本页
-              </label>
-              <span id="pkgSelCount" class="text-violet-300">已选 0 项</span>
-              <div class="flex-1"></div>
-              <button type="button" onclick="batchBanIp()" class="tap min-h-[36px] px-3 py-1.5 bg-amber-900/60 active:bg-amber-900/80 rounded-lg">批量封禁 IP</button>
-              <button type="button" onclick="batchDelete()" class="tap min-h-[36px] px-3 py-1.5 bg-red-900/60 active:bg-red-900/80 rounded-lg">批量删除</button>
-              <button type="button" onclick="clearPkgSel()" class="tap min-h-[36px] px-3 py-1.5 bg-zinc-700 active:bg-zinc-600 rounded-lg">取消选择</button>
+            <div class="flex flex-col gap-2 text-xs bg-zinc-800/60 rounded-xl px-3 py-2.5 sm:flex-row sm:flex-wrap sm:items-center sm:gap-2">
+              <div class="flex items-center justify-between gap-2">
+                <label class="flex items-center gap-2 cursor-pointer select-none min-h-[44px]">
+                  <input type="checkbox" id="pkgAll" onchange="selectAllPkgs(this.checked)" class="w-5 h-5 accent-violet-500" />
+                  全选本页
+                </label>
+                <span id="pkgSelCount" class="text-violet-300">已选 0 项</span>
+              </div>
+              <div class="grid grid-cols-3 gap-2 sm:flex sm:flex-1 sm:justify-end">
+                <button type="button" onclick="batchBanIp()" class="tap min-h-[44px] px-2 py-2 bg-amber-900/60 active:bg-amber-900/80 rounded-lg">批量封禁 IP</button>
+                <button type="button" onclick="batchDelete()" class="tap min-h-[44px] px-2 py-2 bg-red-900/60 active:bg-red-900/80 rounded-lg">批量删除</button>
+                <button type="button" onclick="clearPkgSel()" class="tap min-h-[44px] px-2 py-2 bg-zinc-700 active:bg-zinc-600 rounded-lg">取消选择</button>
+              </div>
             </div>
           </div>
           <div id="pkgList" class="space-y-3 text-sm"></div>
@@ -671,13 +674,13 @@
         const more = (p.files||[]).length>3 ? '…' : '';
         div.innerHTML=`
           <div class="min-w-0">
-            <div class="flex items-center gap-2 flex-wrap">
-              <input type="checkbox" class="pkg-chk w-4 h-4 accent-violet-500 shrink-0" data-id="${p.id}" onchange="syncPkgSel()" aria-label="选择包裹 ${esc(p.extract_code)}"${pkgSel.has(Number(p.id))?' checked':''} />
-              <a class="tap font-mono text-base sm:text-lg tracking-widest break-all text-violet-300 hover:text-violet-200 underline decoration-dotted underline-offset-4" href="/extract?code=${encodeURIComponent(p.extract_code)}" target="_blank" rel="noopener" title="打开提取页">${esc(p.extract_code)}</a>
-              <button type="button" class="tap text-xs text-zinc-400 hover:text-white px-1.5 py-0.5 rounded border border-zinc-700" onclick="copyCode('${esc(p.extract_code)}', this)">复制</button>
+            <div class="flex items-center gap-2 flex-wrap min-h-[44px]">
+              <label class="tap shrink-0 -m-2.5 p-2.5 flex items-center cursor-pointer"><input type="checkbox" class="pkg-chk w-5 h-5 accent-violet-500" data-id="${p.id}" onchange="syncPkgSel()" aria-label="选择包裹 ${esc(p.extract_code)}"${pkgSel.has(Number(p.id))?' checked':''} /></label>
+              <a class="tap font-mono text-base sm:text-lg tracking-widest break-all text-violet-300 hover:text-violet-200 underline decoration-dotted underline-offset-4 py-2" href="/extract?code=${encodeURIComponent(p.extract_code)}" target="_blank" rel="noopener" title="打开提取页">${esc(p.extract_code)}</a>
+              <button type="button" class="tap text-xs text-zinc-400 hover:text-white min-h-[40px] px-2.5 py-1.5 rounded border border-zinc-700" onclick="copyCode('${esc(p.extract_code)}', this)">复制</button>
             </div>
             <div class="text-xs text-zinc-400 mt-1 leading-relaxed">上传 ${fmtTime(p.created_at)} · ${p.file_count||0} 文件 · ${fmtSize(p.total_size)} · 过期 ${fmtTime(p.expire_at)} · 下载 ${p.download_count||0}${p.max_extracts?(' / 限'+p.max_extracts):''}</div>
-            <div class="text-xs text-zinc-500 mt-1 truncate">文件：${esc(names)}${more}</div>
+            <div class="text-xs text-zinc-500 mt-1 break-all sm:truncate" title="${esc(names)}${more}">文件：${esc(names)}${more}</div>
             <div class="text-xs text-zinc-300 mt-1">上传 IP：${ipHtml}</div>
           </div>
           <div class="flex flex-wrap gap-2 w-full sm:w-auto">
