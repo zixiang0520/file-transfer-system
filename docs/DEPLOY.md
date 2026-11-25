@@ -3,7 +3,7 @@
 ## 1. 前置要求
 - Docker 24+（或 Docker Engine + Compose v2 插件），**或** 本机 Python 3.11+ + systemd
 - 开放端口（默认 **8790**），或用反向代理（Nginx / Caddy / OpenResty）
-- 移动云盘账号（见下文「云盘绑定」）
+- 任一存储后端：移动云盘账号（见 3.1）、WebDAV 服务（3.2）或本地磁盘（3.3）
 
 ```bash
 docker --version
@@ -38,13 +38,15 @@ docker compose logs -f --tail=100
 
 公网地址请在后台填写 **公网地址**（`site.public_base_url`），用于生成提取链接。
 
-## 3. 移动云盘绑定（必做 · 对齐 OpenList）
+## 3. 存储后端配置（三选一）
+
+后台 → **存储后端** 选择 `yun139` / `webdav` / `local`，保存后新上传生效；旧文件仍按各自后端读取。
+
+### 3.1 移动云盘（yun139 · 对齐 OpenList）
 
 文档参考：[OpenList 中国移动云盘](https://doc.oplist.org.cn/guide/drivers/139)
 
-本系统**只使用 yun139 新个人云**，文件不落本地盘。
-
-### 3.1 长期推荐（不轻易失效）
+#### 3.1.1 长期推荐（不轻易失效）
 
 在管理后台 → **移动云盘绑定** 填写：
 
@@ -65,14 +67,40 @@ docker compose logs -f --tail=100
 2. 刷新失败或业务返回 `认证失败(05050006)` → 用 Cookie+账密重新登录
 3. 新 token 写回 `data/config.json`，请求自动重试
 
-### 3.2 仅 Authorization（快速但不持久）
+#### 3.1.2 仅 Authorization（快速但不持久）
 
 登录 https://yun.139.com → 开发者工具找 `hcy/file/list` → 复制 `Authorization: Basic ` **后面**的内容填入后台。过期后需手动更新；若同时配了 Cookie+账密，过期会自动救回。
 
-### 3.3 安全
+#### 3.1.3 安全
 
 - Cookie / 密码 / Authorization **只写后台或服务器 `data/config.json`**
 - **禁止**提交 Git、打进镜像、写进 compose 明文、发到公开聊天
+
+### 3.2 WebDAV
+
+适用于 Alist / 群晖 / Nextcloud / 坚果云 / 飞牛自建 WebDAV。
+
+| 字段 | 说明 |
+|------|------|
+| 启用 WebDAV | 勾选 |
+| 地址 | 完整 DAV 入口，如 `http://IP:5244/dav`、`https://dav.jianguoyun.com/dav` |
+| 用户名 / 密码 | WebDAV 账号；坚果云用**应用密码** |
+| 根目录 | 默认 `/文件流转`，不存在会自动创建 |
+| 校验 HTTPS 证书 | 自签证书内网可关闭 |
+| 超时 | 大文件上传建议 300s+ |
+
+保存后点 **「测试 WebDAV 连接」**（会先写探针文件再删除）。文件按 `根目录/年/月/` 存放，下载经服务端流式转发并支持 Range。
+
+### 3.3 本地磁盘
+
+适用于 NAS 本机盘 / 挂载共享目录 / 内网无云盘场景。
+
+| 字段 | 说明 |
+|------|------|
+| 启用本地存储 | 勾选 |
+| 存储目录 | 容器内路径，默认 `/app/storage`；需可写 |
+
+Docker 部署时把宿主机目录挂到该路径，例如 `-v /vol1/1000/fts-storage:/app/storage`。下载经服务端流式转发并支持 Range。
 
 ## 4. 仅构建 / 运行镜像
 ```bash

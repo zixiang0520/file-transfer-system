@@ -3,18 +3,21 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+from contextlib import asynccontextmanager
 import logging
 import os
 import re
 import shutil
 import threading
 import time
+from functools import partial
 from pathlib import Path
 from typing import List, Optional
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from starlette.background import BackgroundTask
+from starlette.concurrency import run_in_threadpool
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
@@ -51,9 +54,31 @@ STATIC = ROOT / "app" / "web" / "static"
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("fts")
 
-app = FastAPI(title="文件流转系统", docs_url=None, redoc_url=None)
-
 cfg0 = load_config()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    db.init_db()
+    load_config()
+
+    def _cleaner():
+        while True:
+            try:
+                n = cleanup_expired()
+                if n:
+                    logger.info("cleaned %s expired packages", n)
+            except Exception as e:
+                logger.warning("cleanup error: %s", e)
+            time.sleep(300)
+
+    t = threading.Thread(target=_cleaner, daemon=True, name="fts-cleaner")
+    t.start()
+    yield
+
+
+app = FastAPI(title="文件流转系统", docs_url=None, redoc_url=None, lifespan=lifespan)
+
 app.add_middleware(
     SessionMiddleware,
     secret_key=cfg0.get("session_secret") or "fts-dev-secret",
@@ -120,6 +145,23 @@ def require_admin(request: Request):
         raise HTTPException(status_code=401, detail="未登录")
 
 
+def _attachment_header(filename: str) -> str:
+    """RFC 6266 / 5987 attachment header that tolerates non-latin-1 names."""
+    from urllib.parse import quote
+
+    raw = (filename or "download").rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    fallback = "".join(
+        c if 0x20 <= ord(c) < 0x7F and c not in '"\\' else "_" for c in raw
+    ).strip() or "download"
+    stem, dot, ext = fallback.rpartition(".")
+    if dot and ext and not stem.strip("_"):
+        fallback = f"download.{ext}"
+    return (
+        f'attachment; filename="{fallback}"; '
+        f"filename*=UTF-8''{quote(raw, safe='')}"
+    )
+
+
 def _normalize_ip(raw: str) -> str:
     raw = (raw or "").strip()
     if not raw:
@@ -163,25 +205,6 @@ def _validate_ban_ip(raw: str) -> str:
     if not ip:
         raise HTTPException(status_code=400, detail="IP 地址无效")
     return ip
-
-
-@app.on_event("startup")
-def on_startup():
-    db.init_db()
-    load_config()
-
-    def _cleaner():
-        while True:
-            try:
-                n = cleanup_expired()
-                if n:
-                    logger.info("cleaned %s expired packages", n)
-            except Exception as e:
-                logger.warning("cleanup error: %s", e)
-            time.sleep(300)
-
-    t = threading.Thread(target=_cleaner, daemon=True, name="fts-cleaner")
-    t.start()
 
 
 @app.get("/health")
@@ -293,7 +316,7 @@ async def api_config_save(request: Request, _: None = Depends(require_admin)):
 
     if "storage" in body and isinstance(body["storage"], dict):
         st = body["storage"]
-        if "backend" in st and st["backend"]:
+        if "backend" in st and st["backend"] in store.SUPPORTED_BACKENDS:
             cfg["storage"]["backend"] = st["backend"]
         if "yun139" in st and isinstance(st["yun139"], dict):
             y = st["yun139"]
@@ -315,6 +338,40 @@ async def api_config_save(request: Request, _: None = Depends(require_admin)):
                     if k == "authorization" and val.lower().startswith("basic "):
                         val = val[6:].strip()
                     cfg["storage"]["yun139"][k] = val
+        if "local" in st and isinstance(st["local"], dict):
+            l = st["local"]
+            lcfg = cfg["storage"].setdefault("local", {})
+            if "enabled" in l:
+                lcfg["enabled"] = bool(l["enabled"])
+            if "root" in l and l["root"] is not None:
+                lcfg["root"] = str(l["root"]).strip()
+        if "webdav" in st and isinstance(st["webdav"], dict):
+            w = st["webdav"]
+            wcfg = cfg["storage"].setdefault("webdav", {})
+            if "enabled" in w:
+                wcfg["enabled"] = bool(w["enabled"])
+            for k in ("url", "username", "root"):
+                if k in w and w[k] is not None:
+                    wcfg[k] = str(w[k]).strip()
+            if "verify_ssl" in w:
+                wcfg["verify_ssl"] = bool(w["verify_ssl"])
+            if "timeout" in w:
+                try:
+                    wcfg["timeout"] = max(10, min(3600, int(w["timeout"])))
+                except (TypeError, ValueError):
+                    pass
+            if "password" in w:
+                val = w["password"]
+                if isinstance(val, str):
+                    val = val.strip()
+                    if (
+                        val
+                        and "…" not in val
+                        and "..." not in val
+                        and val != "****"
+                        and not set(val) <= {"*"}
+                    ):
+                        wcfg["password"] = val
 
     if "qq" in body and isinstance(body["qq"], dict):
         q = body["qq"]
@@ -390,15 +447,24 @@ async def api_upload(
     try:
         payload = []
         for f in files:
-            content = await f.read()
-            payload.append((f.filename or "unnamed", content, f.content_type or "application/octet-stream"))
-        result = create_package_with_files(
-            files=payload,
-            expire_hours=expire_hours,
-            max_extracts=max_extracts,
-            title=title,
-            source="web",
-            client_ip=get_client_ip(request),
+            payload.append(
+                (
+                    f.filename or "unnamed",
+                    f.file,
+                    f.content_type or "application/octet-stream",
+                    int(f.size or 0),
+                )
+            )
+        result = await run_in_threadpool(
+            partial(
+                create_package_with_files,
+                files=payload,
+                expire_hours=expire_hours,
+                max_extracts=max_extracts,
+                title=title,
+                source="web",
+                client_ip=get_client_ip(request),
+            )
         )
         cfg = load_config()
         base = (cfg.get("site") or {}).get("public_base_url") or ""
@@ -406,6 +472,8 @@ async def api_upload(
         return result
     except TransferError as e:
         return JSONResponse({"error": e.message}, status_code=e.code)
+    except store.StorageError as e:
+        return JSONResponse({"error": e.message}, status_code=getattr(e, "code", 502))
     except Exception as e:
         logger.exception("upload failed")
         return JSONResponse({"error": str(e)}, status_code=500)
@@ -609,8 +677,8 @@ def api_package(code: str):
 
 
 @app.get("/api/download/{code}/{file_id}")
-def api_download(code: str, file_id: int):
-    """Redirect to 移动云盘 download URL (no local file)."""
+def api_download(code: str, file_id: int, request: Request):
+    """yun139: redirect to cloud URL. WebDAV: authenticated server-side stream."""
     try:
         from fastapi.responses import RedirectResponse
 
@@ -626,12 +694,47 @@ def api_download(code: str, file_id: int):
                     pass
 
             bg = BackgroundTask(_destroy)
+
+        if not url:
+            # WebDAV 无法给浏览器直链（需要认证），由服务端流式转发，支持 Range
+            up_resp, up_client = store.stream_file(
+                fmeta.get("storage_path") or "",
+                fmeta.get("remote_id") or "",
+                request.headers.get("range") or "",
+            )
+            headers = {}
+            for h in ("content-type", "content-length", "content-range", "accept-ranges", "etag"):
+                v = up_resp.headers.get(h)
+                if v:
+                    headers[h.title()] = v
+            headers["Content-Disposition"] = _attachment_header(
+                fmeta.get("original_name") or "download"
+            )
+            headers["Content-Encoding"] = "identity"
+
+            def _iter():
+                try:
+                    for chunk in up_resp.iter_bytes(256 * 1024):
+                        yield chunk
+                finally:
+                    up_resp.close()
+                    up_client.close()
+
+            return StreamingResponse(
+                _iter(),
+                status_code=up_resp.status_code,
+                headers=headers,
+                background=bg,
+            )
+
         resp = RedirectResponse(url=url, status_code=302)
         if bg is not None:
             resp.background = bg
         return resp
     except TransferError as e:
         return JSONResponse({"error": e.message}, status_code=e.code)
+    except store.StorageError as e:
+        return JSONResponse({"error": e.message}, status_code=getattr(e, "code", 502))
 
 
 @app.get("/api/download-all/{code}")
@@ -650,7 +753,10 @@ def api_download_all(code: str):
         return StreamingResponse(
             iter([data]),
             media_type="application/zip",
-            headers={"Content-Disposition": f'attachment; filename="{name}"'},
+            headers={
+                "Content-Disposition": _attachment_header(name),
+                "Content-Encoding": "identity",
+            },
             background=bg,
         )
     except TransferError as e:
@@ -678,7 +784,10 @@ def api_download_selected(code: str, ids: str = ""):
         return StreamingResponse(
             iter([data]),
             media_type="application/zip",
-            headers={"Content-Disposition": f'attachment; filename="{name}"'},
+            headers={
+                "Content-Disposition": _attachment_header(name),
+                "Content-Encoding": "identity",
+            },
             background=bg,
         )
     except ValueError:
@@ -933,6 +1042,27 @@ def api_yun139_test(_: None = Depends(require_admin)):
     return Yun139Client().test_connection()
 
 
+@app.get("/api/upload-mode")
+def api_upload_mode():
+    """前端据此决定：浏览器直传云盘（yun139）还是服务器中转（webdav）。"""
+    backend = store.current_backend()
+    return {"backend": backend, "direct": backend == "yun139"}
+
+
+@app.post("/api/storage/webdav/test")
+def api_webdav_test(_: None = Depends(require_admin)):
+    from app.core.webdav import WebDAVClient
+
+    return WebDAVClient().test_connection()
+
+
+@app.post("/api/storage/local/test")
+def api_local_test(_: None = Depends(require_admin)):
+    from app.core.localstore import LocalStorageClient
+
+    return LocalStorageClient().test_connection()
+
+
 # ---------- QQ bot API (token simple) ----------
 @app.post("/api/bot/upload")
 async def bot_upload(
@@ -955,19 +1085,33 @@ async def bot_upload(
     try:
         payload = []
         for f in files:
-            content = await f.read()
-            payload.append((f.filename or "unnamed", content, f.content_type or "application/octet-stream"))
-        result = create_package_with_files(
-            files=payload,
-            expire_hours=expire_hours,
-            max_extracts=max_extracts,
-            title=title,
-            source="qq",
-            client_ip=get_client_ip(request),
+            payload.append(
+                (
+                    f.filename or "unnamed",
+                    f.file,
+                    f.content_type or "application/octet-stream",
+                    int(f.size or 0),
+                )
+            )
+        result = await run_in_threadpool(
+            partial(
+                create_package_with_files,
+                files=payload,
+                expire_hours=expire_hours,
+                max_extracts=max_extracts,
+                title=title,
+                source="qq",
+                client_ip=get_client_ip(request),
+            )
         )
         return result
     except TransferError as e:
         return JSONResponse({"error": e.message}, status_code=e.code)
+    except store.StorageError as e:
+        return JSONResponse({"error": e.message}, status_code=getattr(e, "code", 502))
+    except Exception as e:
+        logger.exception("bot upload failed")
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 @app.get("/api/bot/package/{code}")

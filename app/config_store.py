@@ -61,9 +61,14 @@ DEFAULTS: Dict[str, Any] = {
         "default_max_extracts": 0,
     },
     "storage": {
-        # local | yun139
+        # yun139 | webdav | local
         "backend": "yun139",
         "local_root": str(STORAGE_DIR),
+        # 本地磁盘（NAS 本机盘 / 挂载目录）
+        "local": {
+            "enabled": False,
+            "root": str(STORAGE_DIR),
+        },
         "yun139": {
             "enabled": False,
             # Authorization after Basic (no "Basic " prefix)
@@ -76,6 +81,16 @@ DEFAULTS: Dict[str, Any] = {
             "password": "",
             "user_domain_id": "",
             "resolved_folder_id": "",
+        },
+        # 通用 WebDAV（Alist / 坚果云 / Nextcloud / 群晖 / 飞牛等）
+        "webdav": {
+            "enabled": False,
+            "url": "",  # 如 https://dav.example.com/dav
+            "username": "",
+            "password": "",
+            "root": "/文件流转",
+            "verify_ssl": True,
+            "timeout": 300,
         },
     },
     "qq": {
@@ -173,6 +188,13 @@ def public_config_view() -> Dict[str, Any]:
         y["mail_cookies"] = mask(y["mail_cookies"])
     else:
         y["mail_cookies_set"] = False
+
+    w = cfg.get("storage", {}).get("webdav", {})
+    if w.get("password"):
+        w["password_set"] = True
+        w["password"] = "****"
+    else:
+        w["password_set"] = False
 
     qq = cfg.get("qq", {})
     if qq.get("client_secret"):

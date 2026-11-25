@@ -673,7 +673,94 @@ def _remote_id_from_meta(storage_path: str, remote_id: str = "") -> str:
     return storage_path
 
 
-def save_file(fileobj: BinaryIO, original_name: str) -> Dict[str, str]:
+def _backend_path(storage_path: str, remote_id: str = "") -> str:
+    if remote_id:
+        return remote_id
+    for prefix in ("webdav://", "local://"):
+        if storage_path.startswith(prefix):
+            return storage_path[len(prefix) :]
+    return storage_path
+
+
+# ---------- backend dispatch ----------
+
+SUPPORTED_BACKENDS = ("yun139", "webdav", "local")
+
+
+def _as_storage_error(e: Exception) -> StorageError:
+    """Normalise backend-specific errors so API routes only catch StorageError."""
+    if isinstance(e, StorageError):
+        return e
+    return StorageError(getattr(e, "message", "") or str(e), getattr(e, "code", 502))
+
+
+def current_backend(cfg: Optional[Dict[str, Any]] = None) -> str:
+    """Return the active storage backend name (``yun139`` | ``webdav`` | ``local``)."""
+    cfg = cfg or load_config()
+    raw = str((cfg.get("storage") or {}).get("backend") or "yun139").strip().lower()
+    return raw if raw in SUPPORTED_BACKENDS else "yun139"
+
+
+def backend_status() -> Tuple[str, str]:
+    """Return (backend, error_message). error empty means ready."""
+    cfg = load_config()
+    name = current_backend(cfg)
+    st = cfg.get("storage") or {}
+    if name == "webdav":
+        w = st.get("webdav") or {}
+        if not w.get("enabled"):
+            return name, "WebDAV 存储未启用：请在后台启用并填写地址"
+        if not (w.get("url") or "").strip():
+            return name, "WebDAV 地址为空：请在后台填写"
+        return name, ""
+    if name == "local":
+        loc = st.get("local") or {}
+        if not loc.get("enabled"):
+            return name, "本地存储未启用：请在后台启用"
+        return name, ""
+    y = st.get("yun139") or {}
+    if not y.get("enabled") or not (y.get("authorization") or "").strip():
+        if not (y.get("mail_cookies") and y.get("username") and y.get("password")):
+            return name, "未配置移动云盘：请在后台启用并填写 Authorization"
+    return name, ""
+
+
+def require_backend() -> str:
+    name, err = backend_status()
+    if err:
+        raise StorageError(err, 503)
+    if name == "webdav":
+        from app.core.webdav import WebDAVClient
+
+        WebDAVClient().require()
+    elif name == "local":
+        from app.core.localstore import LocalStorageClient
+
+        LocalStorageClient().require()
+    return name
+
+
+def save_file(fileobj: BinaryIO, original_name: str, size: int = 0) -> Dict[str, str]:
+    """Persist a file to the active backend.
+
+    ``yun139`` reads the stream fully (existing behaviour); ``webdav`` streams
+    the file-like object straight to the server without buffering the whole file.
+    """
+    backend = current_backend()
+    if backend == "webdav":
+        from app.core.webdav import WebDAVClient
+
+        try:
+            return WebDAVClient().upload_stream(fileobj, original_name, size)
+        except Exception as e:
+            raise _as_storage_error(e) from e
+    if backend == "local":
+        from app.core.localstore import LocalStorageClient
+
+        try:
+            return LocalStorageClient().upload_stream(fileobj, original_name, size)
+        except Exception as e:
+            raise _as_storage_error(e) from e
     yun = Yun139Client()
     yun.require()
     data = fileobj.read()
@@ -695,18 +782,70 @@ def complete_upload(file_id: str, upload_id: str, sha256: str) -> None:
 
 
 def open_file_bytes(storage_path: str, remote_id: str = "") -> bytes:
+    if (storage_path or "").startswith("webdav://"):
+        from app.core.webdav import WebDAVClient
+
+        try:
+            return WebDAVClient().download_bytes(_backend_path(storage_path, remote_id))
+        except Exception as e:
+            raise _as_storage_error(e) from e
+    if (storage_path or "").startswith("local://"):
+        from app.core.localstore import LocalStorageClient
+
+        try:
+            return LocalStorageClient().download_bytes(_backend_path(storage_path, remote_id))
+        except Exception as e:
+            raise _as_storage_error(e) from e
     yun = Yun139Client()
     fid = _remote_id_from_meta(storage_path, remote_id)
     return yun.download_bytes(fid)
 
 
 def get_download_url(storage_path: str, remote_id: str = "") -> str:
+    """Return a browser-facing URL. WebDAV needs authenticated streaming, so it
+    returns an empty string and the caller streams through the server."""
+    if (storage_path or "").startswith(("webdav://", "local://")):
+        return ""
     yun = Yun139Client()
     fid = _remote_id_from_meta(storage_path, remote_id)
     return yun.get_download_url(fid)
 
 
+def stream_file(
+    storage_path: str, remote_id: str = "", range_header: str = ""
+) -> Tuple[Any, Any]:
+    """Open a server-side stream; caller forwards bytes and closes both."""
+    try:
+        if (storage_path or "").startswith("local://"):
+            from app.core.localstore import LocalStorageClient
+
+            return LocalStorageClient().open_stream(
+                _backend_path(storage_path, remote_id), range_header
+            )
+        from app.core.webdav import WebDAVClient
+
+        return WebDAVClient().open_stream(_backend_path(storage_path, remote_id), range_header)
+    except Exception as e:
+        raise _as_storage_error(e) from e
+
+
 def delete_file(backend: str, storage_path: str, remote_id: str = "") -> None:
+    if (storage_path or "").startswith("local://") or (backend or "").lower() == "local":
+        from app.core.localstore import LocalStorageClient
+
+        try:
+            LocalStorageClient().delete(_backend_path(storage_path, remote_id))
+        except Exception as e:
+            logger.warning("local delete failed: %s", e)
+        return
+    if (storage_path or "").startswith("webdav://") or (backend or "").lower() == "webdav":
+        from app.core.webdav import WebDAVClient
+
+        try:
+            WebDAVClient().delete(_backend_path(storage_path, remote_id))
+        except Exception as e:
+            logger.warning("webdav delete failed: %s", e)
+        return
     fid = _remote_id_from_meta(storage_path, remote_id)
     if not fid:
         return

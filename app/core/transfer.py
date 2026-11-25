@@ -99,7 +99,7 @@ def max_bytes() -> int:
 
 def create_package_with_files(
     *,
-    files: Sequence[Tuple[str, bytes, str]],
+    files: Sequence[Tuple[str, Any, str, int]],
     expire_hours: Optional[float] = None,
     max_extracts: Optional[int] = None,
     title: str = "",
@@ -111,8 +111,16 @@ def create_package_with_files(
     up = cfg.get("upload") or {}
     st = cfg.get("storage") or {}
     y = st.get("yun139") or {}
-    if not y.get("enabled") or not (y.get("authorization") or "").strip():
-        raise TransferError("未配置移动云盘：请在后台启用并填写 Authorization", 503)
+    # 存储后端就绪检查：yun139 需授权；webdav 需启用且填地址
+    if store.current_backend(cfg) == "yun139" and (
+        not y.get("enabled") or not (y.get("authorization") or "").strip()
+    ):
+        if not (y.get("mail_cookies") and y.get("username") and y.get("password")):
+            raise TransferError("未配置移动云盘：请在后台启用并填写 Authorization", 503)
+    try:
+        store.require_backend()
+    except store.StorageError as e:
+        raise TransferError(e.message, getattr(e, "code", 503))
 
     ip = (client_ip or "").strip()
     if ip:
@@ -127,16 +135,26 @@ def create_package_with_files(
         raise TransferError(f"单次最多 {max_n} 个文件")
 
     limit = max_bytes()
-    prepared: List[Tuple[str, bytes, str]] = []
-    for name, content, ctype in files:
+    prepared: List[Tuple[str, Any, str, int]] = []
+    for item in files:
+        name, content, ctype = item[0], item[1], item[2]
+        size = int(item[3]) if len(item) > 3 and item[3] else 0
+        if not size:
+            try:
+                size = len(content)
+            except TypeError:
+                pos = content.tell()
+                content.seek(0, 2)
+                size = content.tell()
+                content.seek(pos)
         ok, pure = validate_filename(name)
         if not ok:
             raise TransferError(pure)
-        if len(content) > limit:
+        if size > limit:
             raise TransferError(f"{pure} 超过大小限制 {up.get('max_file_size_mb')}MB")
-        if len(content) <= 0:
+        if size <= 0:
             raise TransferError(f"{pure} 是空文件")
-        prepared.append((pure, content, ctype or "application/octet-stream"))
+        prepared.append((pure, content, ctype or "application/octet-stream", size))
 
     hours = expire_hours
     if hours is None:
@@ -175,9 +193,10 @@ def create_package_with_files(
 
     saved = []
     try:
-        for pure, content, ctype in prepared:
-            bio = io.BytesIO(content)
-            meta = store.save_file(bio, pure)
+        for pure, content, ctype, size in prepared:
+            if hasattr(content, "seek"):
+                content.seek(0)
+            meta = store.save_file(content, pure, size)
             fid = db.add_file(
                 package_id=pkg_id,
                 original_name=pure,
@@ -238,6 +257,10 @@ def init_direct_upload(
     up = cfg.get("upload") or {}
     st = cfg.get("storage") or {}
     y = st.get("yun139") or {}
+    if store.current_backend(cfg) != "yun139":
+        raise TransferError(
+            "当前存储后端不支持浏览器直传，请使用服务器中转上传（普通上传）", 400
+        )
     if not y.get("enabled") or not (y.get("authorization") or "").strip():
         raise TransferError("未配置移动云盘：请在后台启用并填写 Authorization", 503)
 

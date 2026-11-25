@@ -2,7 +2,7 @@
 
 深色主题的临时文件分享服务：多文件一次上传生成**一个提取码**，对方凭码查看文件列表，支持单下 / 勾选下载 / 全部 ZIP；可设有效期与提取次数，次数用尽或过期后自动销毁。
 
-> 状态：**已完成**。仅 **移动云盘 (yun139 personal_new)** 存储，无本地落盘；鉴权对齐 [OpenList 139](https://doc.oplist.org.cn/guide/drivers/139)。
+> 状态：**已完成**。支持三种可切换存储后端：**移动云盘 (yun139 personal_new)**、**WebDAV**（Alist / 群晖 / Nextcloud / 坚果云…）、**本地磁盘**（NAS 本机盘 / 挂载目录）。已上传文件按各自后端读取，切换后端不影响旧包裹。
 
 仓库：https://github.com/zixiang0520/file-transfer-system
 
@@ -14,9 +14,24 @@
 - 提取页：全选 / 复选框 / 「下载已选择的文件」 / 全部 ZIP / 单文件下载
 - 管理后台：登录、改管理员账号密码、包裹管理、**上传 IP 记录 / 封禁**、上传限额、云盘绑定、清理过期包裹
 - 前台 / 提取 / 后台均做**手机平板适配**
+- **可切换存储后端**：移动云盘 / WebDAV / 本地磁盘；后台一键测试连接
 - **不做 QQ 机器人**（纯 Web）
 
-## 移动云盘
+## 存储后端
+
+后台 → **存储后端** 选择，保存后新上传生效；旧文件仍按 `files.storage_backend` 读取。
+
+| 后端 | 适用场景 | 上传方式 | 下载方式 |
+|------|----------|----------|----------|
+| `yun139` | 移动云盘账号，公网可用、不占服务器带宽 | 浏览器分片直传云盘（推荐）/ 服务器中转 | 302 跳转云盘直链 |
+| `webdav` | Alist、群晖、Nextcloud、坚果云、飞牛自建 | 服务器流式中转（`PUT`） | 服务端流式转发，支持 Range |
+| `local` | NAS 本机盘、挂载共享目录、内网无云盘 | 服务器流式落盘 | 服务端流式转发，支持 Range |
+
+- 本地存储目录：`storage.local.root`（默认 `/app/storage`，Docker 需挂载宿主机目录）
+- WebDAV 文件按 `根目录/年/月/<uuid>_<文件名>` 存放；本地存储同理
+- WebDAV / 本地下载都经服务端中转（WebDAV 需要 Basic 认证，不能直接暴露直链），支持断点续传/Range
+
+## 移动云盘（yun139）
 
 ### 根目录
 
@@ -114,7 +129,9 @@ docker compose up -d --build
 | `upload.max_files_per_package` | 单次最多文件数 |
 | `upload.default_expire_hours` | 默认有效期（小时） |
 | `upload.max_expire_days` | 最长有效期（天） |
-| `storage.backend` | 固定 `yun139` |
+| `storage.backend` | 存储后端：`yun139` / `webdav` / `local`（默认 `yun139`） |
+| `storage.local.enabled` / `root` | 本地磁盘开关与目录 |
+| `storage.webdav.enabled` / `url` / `username` / `password` / `root` / `verify_ssl` / `timeout` | WebDAV 连接配置 |
 | `storage.yun139.enabled` | 是否启用云盘 |
 | `storage.yun139.authorization` | Basic 后 token（可自动生成/刷新） |
 | `storage.yun139.mail_cookies` | 邮箱 Cookie |
@@ -133,7 +150,10 @@ docker compose up -d --build
 | GET | `/api/download/{code}/{file_id}` | 单文件 |
 | GET | `/api/download-selected/{code}` | 勾选 ZIP |
 | GET | `/api/download-all/{code}` | 全部 ZIP |
+| GET | `/api/upload-mode` | 前端：当前后端与是否支持浏览器直传 |
 | POST | `/api/yun139/test` | 后台：测试连接 / 触发续期（需登录） |
+| POST | `/api/storage/webdav/test` | 后台：测试 WebDAV 连接（需登录） |
+| POST | `/api/storage/local/test` | 后台：测试本地目录可写（需登录） |
 | GET | `/api/packages` | 后台：包裹列表（含 `uploader_ip`） |
 | POST | `/api/packages/{id}/ban-ip` | 后台：封禁该包裹上传 IP，可选删包裹 |
 | GET/POST/DELETE | `/api/banned-ips` | 后台：封禁名单（DELETE `?ip=`） |
@@ -150,8 +170,10 @@ file-transfer-system/
 ├── app/
 │   ├── config_store.py
 │   ├── core/
-│   │   ├── storage.py        # yun139 上传/下载/路径解析
+│   │   ├── storage.py        # 存储后端分派 + yun139 上传/下载
 │   │   ├── yun139_auth.py    # OpenList 式刷新 + 密码登录
+│   │   ├── webdav.py         # WebDAV 后端（流式上传/下载）
+│   │   ├── localstore.py     # 本地磁盘后端（流式落盘/下载）
 │   │   ├── transfer.py
 │   │   └── db.py
 │   └── web/templates/        # index / extract / admin（移动端）

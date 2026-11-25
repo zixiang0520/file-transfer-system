@@ -529,6 +529,53 @@
       }
     }
 
+    // WebDAV / 其他非直传后端：multipart 一次性 POST 到服务器，由服务器中转。
+    // 用 XHR 而不是 fetch 是为了拿到真实上传进度。
+    function uploadViaServer(expireHours, maxExt, totalSize, btn, oldHtml) {
+      return new Promise((resolve) => {
+        const fd = new FormData();
+        selectedFiles.forEach(f => fd.append('files', f, f.name));
+        fd.append('expire_hours', String(expireHours));
+        fd.append('max_extracts', String(maxExt));
+        fd.append('title', '');
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', '/api/upload');
+        xhr.timeout = 0;
+        const started = Date.now();
+        xhr.upload.onprogress = (e) => {
+          if (!e.lengthComputable) return;
+          const pct = e.total ? (e.loaded / e.total * 100) : 0;
+          const dt = Math.max(0.1, (Date.now() - started) / 1000);
+          const speed = e.loaded / dt;
+          const remain = speed > 0 ? (e.total - e.loaded) / speed : 0;
+          setProgress(pct, '上传到服务器（WebDAV 中转）…', e.loaded, e.total,
+            fmtBytes(speed) + '/s' + (remain > 0 && pct < 99.5 ? ' · 剩余 ' + fmtEta(remain) : ''));
+        };
+        const fail = (msg) => {
+          alert('上传失败：' + msg);
+          btn.disabled = false;
+          btn.innerHTML = oldHtml;
+          document.getElementById('progressWrap').classList.add('hidden');
+          resolve();
+        };
+        xhr.onload = () => {
+          let data = {};
+          try { data = JSON.parse(xhr.responseText || '{}'); } catch (e) {}
+          if (xhr.status >= 200 && xhr.status < 300 && !data.error) {
+            selectedFiles = [];
+            shaCache.clear(); shaCacheBytes = 0;
+            showResult(data);
+          } else {
+            fail(data.error || ('HTTP ' + xhr.status));
+          }
+          resolve();
+        };
+        xhr.onerror = () => fail('网络错误');
+        xhr.ontimeout = () => fail('请求超时');
+        xhr.send(fd);
+      });
+    }
+
     async function uploadFiles() {
       if (selectedFiles.length === 0) return;
       shaCache.clear(); shaCacheBytes = 0; // 每次上传重新读取并锁定内容
@@ -554,6 +601,18 @@
       }
       let maxExt = parseInt(document.getElementById('maxExtracts').value, 10);
       if (isNaN(maxExt) || maxExt < 0) maxExt = 0;
+
+      // 存储后端决定上传通道：yun139 支持浏览器直传（分片直上云盘），
+      // WebDAV 需要 Basic 认证、没有预签名 URL，改走服务器中转上传。
+      let mode = { backend: 'yun139', direct: true };
+      try {
+        const mr = await fetchJSON('/api/upload-mode', {}, 15000);
+        mode = await mr.json().catch(() => mode);
+      } catch (e) { /* 探测失败按直传处理，保持旧行为 */ }
+      if (!mode.direct) {
+        await uploadViaServer(expireHours, maxExt, totalSize, btn, oldHtml);
+        return;
+      }
 
       // 所有大小统一走「浏览器直传云盘」：分片 10MB（服务端控制），单片失败
       // 自动重试 + 降级服务器同步中转。秒传（云端已有同内容文件）0 流量完成。
