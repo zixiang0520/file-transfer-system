@@ -182,6 +182,8 @@
 
   <script>
     let selectedFiles = [];
+    // 最近一次上传成功的提取信息（复制按钮要用完整链接，不能只给提取码）
+    let lastExtract = null;
 
     // --- 内容锁定缓存：sha 计算时把文件内容读入内存，上传分片用同一份数据，
     // --- 避免文件在两次读取之间被其他程序修改导致"摘要值不匹配"---
@@ -820,22 +822,33 @@
         if (refBtn) panel.insertBefore(linkBox, refBtn);
         else panel.appendChild(linkBox);
       }
-      const url = data.extract_url || (`/extract?code=${data.extract_code}`);
+      const url = absoluteUrl(data.extract_url || `/extract?code=${data.extract_code}`);
+      lastExtract = { code: data.extract_code || '', url };
       linkBox.innerHTML = `提取页：<a class="text-violet-400 underline" href="${url}">${url}</a>`;
     }
 
+    // 相对路径补成绝对地址：复制给别人时必须是能直接打开的完整链接
+    function absoluteUrl(u) {
+      const s = String(u || '');
+      if (!s) return location.origin;
+      if (/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) return s;
+      return location.origin + (s.startsWith('/') ? '' : '/') + s;
+    }
+
     function copyCode() {
-      const code = document.getElementById('extractCode').textContent;
+      const code = (lastExtract && lastExtract.code) || document.getElementById('extractCode').textContent;
+      const url = (lastExtract && lastExtract.url) || absoluteUrl(`/extract?code=${encodeURIComponent(code)}`);
+      const text = `提取链接：${url}\n提取码：${code}`;
       const done = () => {
         const t = document.createElement('div');
         t.className = 'fixed bottom-6 left-1/2 -translate-x-1/2 bg-emerald-600 text-white text-sm px-4 py-2 rounded-full z-50';
-        t.textContent = '提取码已复制';
+        t.textContent = '提取链接和提取码已复制';
         document.body.appendChild(t);
-        setTimeout(() => t.remove(), 1500);
+        setTimeout(() => t.remove(), 1800);
       };
       if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(code).then(done).catch(() => fallbackCopy(code, done));
-      } else fallbackCopy(code, done);
+        navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done));
+      } else fallbackCopy(text, done);
     }
     function fallbackCopy(text, done) {
       const ta = document.createElement('textarea');
