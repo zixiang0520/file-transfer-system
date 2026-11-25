@@ -61,7 +61,7 @@ DEFAULTS: Dict[str, Any] = {
         "default_max_extracts": 0,
     },
     "storage": {
-        # yun139 | webdav | local
+        # yun139 | openlist | webdav | local
         "backend": "yun139",
         "local_root": str(STORAGE_DIR),
         # 本地磁盘（NAS 本机盘 / 挂载目录）
@@ -81,6 +81,20 @@ DEFAULTS: Dict[str, Any] = {
             "password": "",
             "user_domain_id": "",
             "resolved_folder_id": "",
+        },
+        # 通用 OpenList（AList 分支）：把 OpenList 已挂载的网盘当存储
+        "openlist": {
+            "enabled": False,
+            "url": "",  # 如 http://192.168.1.10:5244 或 https://pan.example.com
+            "token": "",
+            "token_saved_at": 0,
+            "username": "",
+            "password": "",
+            "otp_code": "",
+            "root": "/文件流转",
+            "verify_ssl": True,
+            "timeout": 300,
+            "direct_link": True,  # 优先给浏览器 302 直链（/d/…?sign=…）
         },
         # 通用 WebDAV（Alist / 坚果云 / Nextcloud / 群晖 / 飞牛等）
         "webdav": {
@@ -188,6 +202,18 @@ def public_config_view() -> Dict[str, Any]:
         y["mail_cookies"] = mask(y["mail_cookies"])
     else:
         y["mail_cookies_set"] = False
+
+    o = cfg.get("storage", {}).get("openlist", {})
+    if o.get("token"):
+        o["token_set"] = True
+        o["token"] = mask(o["token"])
+    else:
+        o["token_set"] = False
+    if o.get("password"):
+        o["password_set"] = True
+        o["password"] = "****"
+    else:
+        o["password_set"] = False
 
     w = cfg.get("storage", {}).get("webdav", {})
     if w.get("password"):

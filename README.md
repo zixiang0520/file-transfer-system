@@ -2,7 +2,7 @@
 
 深色主题的临时文件分享服务：多文件一次上传生成**一个提取码**，对方凭码查看文件列表，支持单下 / 勾选下载 / 全部 ZIP；可设有效期与提取次数，次数用尽或过期后自动销毁。
 
-> 状态：**已完成**。支持三种可切换存储后端：**移动云盘 (yun139 personal_new)**、**WebDAV**（Alist / 群晖 / Nextcloud / 坚果云…）、**本地磁盘**（NAS 本机盘 / 挂载目录）。已上传文件按各自后端读取，切换后端不影响旧包裹。
+> 状态：**已完成**。支持四种可切换存储后端：**移动云盘 (yun139 personal_new)**、**OpenList**（AList 分支，聚合 OneDrive / 阿里云盘 / 115 / 移动云盘…）、**WebDAV**（Alist / 群晖 / Nextcloud / 坚果云…）、**本地磁盘**（NAS 本机盘 / 挂载目录）。已上传文件按各自后端读取，切换后端不影响旧包裹。
 
 仓库：https://github.com/zixiang0520/file-transfer-system
 
@@ -14,7 +14,7 @@
 - 提取页：全选 / 复选框 / 「下载已选择的文件」 / 全部 ZIP / 单文件下载
 - 管理后台：登录、改管理员账号密码、包裹管理、**上传 IP 记录 / 封禁**、上传限额、云盘绑定、清理过期包裹
 - 前台 / 提取 / 后台均做**手机平板适配**
-- **可切换存储后端**：移动云盘 / WebDAV / 本地磁盘；后台一键测试连接
+- **可切换存储后端**：移动云盘 / OpenList / WebDAV / 本地磁盘；后台一键测试连接
 - **不做 QQ 机器人**（纯 Web）
 
 ## 存储后端
@@ -24,12 +24,38 @@
 | 后端 | 适用场景 | 上传方式 | 下载方式 |
 |------|----------|----------|----------|
 | `yun139` | 移动云盘账号，公网可用、不占服务器带宽 | 浏览器分片直传云盘（推荐）/ 服务器中转 | 302 跳转云盘直链 |
+| `openlist` | 已部署 OpenList 并挂好网盘（OneDrive / 阿里云盘 / 115 / 移动云盘…） | 服务器流式中转（`PUT /api/fs/put`） | 302 跳转 `/d/…?sign=…` 直链，或服务端流式转发 |
 | `webdav` | Alist、群晖、Nextcloud、坚果云、飞牛自建 | 服务器流式中转（`PUT`） | 服务端流式转发，支持 Range |
 | `local` | NAS 本机盘、挂载共享目录、内网无云盘 | 服务器流式落盘 | 服务端流式转发，支持 Range |
 
 - 本地存储目录：`storage.local.root`（默认 `/app/storage`，Docker 需挂载宿主机目录）
-- WebDAV 文件按 `根目录/年/月/<uuid>_<文件名>` 存放；本地存储同理
+- OpenList / WebDAV / 本地文件统一按 `根目录/年/月/<uuid>_<文件名>` 存放，目录不存在自动创建
+- OpenList 走官方 REST API：登录拿 token → `POST /api/fs/mkdir` 建目录 → `PUT /api/fs/put` 上传 →
+  `POST /api/fs/get` 取 `sign` 生成 `/d/…` 直链 → `POST /api/fs/remove` 删除
 - WebDAV / 本地下载都经服务端中转（WebDAV 需要 Basic 认证，不能直接暴露直链），支持断点续传/Range
+
+## OpenList 后端
+
+先在 OpenList 里把网盘挂载好（OpenList 负责驱动各种云盘），本系统只当「上传/下载/删除」的客户端：
+
+| 字段 | 说明 |
+|------|------|
+| 地址 | OpenList 站点根地址，如 `http://192.168.1.10:5244`、`https://pan.example.com`（不要带 `/api`） |
+| 用户名 / 密码 | OpenList 账号；系统自动 `POST /api/auth/login` 拿 token，401 时自动重登 |
+| 两步验证码 | 账号开了 2FA 时填当前 6 位码 |
+| Token | 可选，优先于账密；`Authorization: <token>`，默认 48 小时过期，仅填 token 时过期需手更 |
+| 根目录 | 默认 `/文件流转`，不存在会自动创建 |
+| 直链下载（302） | 默认开：下载直接 302 到 `OpenList/d/路径?sign=…`，不占本机带宽；服务器在内网时浏览器需能访问该地址，否则关掉改走中转 |
+| 超时 | 单次 API / 上传超时，默认 300 秒 |
+
+```bash
+# 用 curl 验证 OpenList 侧是否通（把地址/账号换成你的）
+TOKEN=$(curl -s -X POST http://127.0.0.1:5244/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"***"}' | jq -r .data.token)
+curl -s -X POST http://127.0.0.1:5244/api/fs/list -H "Authorization: $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"path":"/","page":1,"per_page":10}'
+```
 
 ## 移动云盘（yun139）
 
@@ -141,7 +167,10 @@ NAS 多为 aarch64，开发机多为 x86_64，直接在 NAS 上 `--build` 容易
 | `upload.max_files_per_package` | 单次最多文件数 |
 | `upload.default_expire_hours` | 默认有效期（小时） |
 | `upload.max_expire_days` | 最长有效期（天） |
-| `storage.backend` | 存储后端：`yun139` / `webdav` / `local`（默认 `yun139`） |
+| `storage.backend` | 存储后端：`yun139` / `openlist` / `webdav` / `local`（默认 `yun139`） |
+| `storage.openlist.enabled` / `url` / `username` / `password` / `otp_code` | OpenList 连接配置 |
+| `storage.openlist.token` / `token_saved_at` | OpenList 登录后缓存的 token（自动写入） |
+| `storage.openlist.root` / `direct_link` / `verify_ssl` / `timeout` | OpenList 根目录、直链开关、证书校验、超时 |
 | `storage.local.enabled` / `root` | 本地磁盘开关与目录 |
 | `storage.webdav.enabled` / `url` / `username` / `password` / `root` / `verify_ssl` / `timeout` | WebDAV 连接配置 |
 | `storage.yun139.enabled` | 是否启用云盘 |
@@ -164,6 +193,7 @@ NAS 多为 aarch64，开发机多为 x86_64，直接在 NAS 上 `--build` 容易
 | GET | `/api/download-all/{code}` | 全部 ZIP |
 | GET | `/api/upload-mode` | 前端：当前后端与是否支持浏览器直传 |
 | POST | `/api/yun139/test` | 后台：测试连接 / 触发续期（需登录） |
+| POST | `/api/storage/openlist/test` | 后台：测试 OpenList 连接（登录 + 列目录 + 写探针，需登录） |
 | POST | `/api/storage/webdav/test` | 后台：测试 WebDAV 连接（需登录） |
 | POST | `/api/storage/local/test` | 后台：测试本地目录可写（需登录） |
 | GET | `/api/packages` | 后台：包裹列表（含 `uploader_ip`） |
@@ -185,6 +215,7 @@ file-transfer-system/
 │   ├── core/
 │   │   ├── storage.py        # 存储后端分派 + yun139 上传/下载
 │   │   ├── yun139_auth.py    # OpenList 式刷新 + 密码登录
+│   │   ├── openlist.py       # OpenList 后端（REST API 上传/直链/删除）
 │   │   ├── webdav.py         # WebDAV 后端（流式上传/下载）
 │   │   ├── localstore.py     # 本地磁盘后端（流式落盘/下载）
 │   │   ├── transfer.py

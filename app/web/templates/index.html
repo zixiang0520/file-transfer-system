@@ -603,7 +603,7 @@
       if (isNaN(maxExt) || maxExt < 0) maxExt = 0;
 
       // 存储后端决定上传通道：yun139 支持浏览器直传（分片直上云盘），
-      // WebDAV 需要 Basic 认证、没有预签名 URL，改走服务器中转上传。
+      // OpenList / WebDAV / 本地磁盘没有预签名 URL，改走服务器中转上传。
       let mode = { backend: 'yun139', direct: true };
       try {
         const mr = await fetchJSON('/api/upload-mode', {}, 15000);

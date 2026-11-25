@@ -153,6 +153,7 @@
           <label class="text-sm block">存储后端
             <select id="backend" class="mt-1 w-full min-h-[44px] bg-zinc-800 rounded-xl px-3 py-2.5">
               <option value="yun139" selected>移动云盘（139）</option>
+              <option value="openlist">OpenList（多网盘聚合 / AList 分支）</option>
               <option value="webdav">WebDAV（Alist / 群晖 / Nextcloud…）</option>
               <option value="local">本地磁盘（NAS 本机盘 / 挂载目录）</option>
             </select>
@@ -178,6 +179,51 @@
           <div class="flex flex-col sm:flex-row sm:items-center gap-2 sm:col-span-2">
             <button type="button" onclick="test139()" class="tap min-h-[44px] px-4 py-2 bg-zinc-800 active:bg-zinc-700 rounded-xl text-sm w-full sm:w-auto">测试连接 / 自动续期</button>
             <span id="yTest" class="text-xs text-zinc-400 break-all"></span>
+          </div>
+        </div>
+
+        <h3 class="font-medium pt-4">OpenList 存储</h3>
+        <p class="text-xs text-zinc-500 leading-relaxed">
+          用 <b>OpenList</b>（AList 的活跃分支）做存储层：先在 OpenList 里把网盘挂载好，这里只填 OpenList 地址与账号即可。<br/>
+          文件按 <code>根目录/年/月/</code> 存放，缺失目录会自动创建；「直链下载」开启时浏览器 302 到
+          <code>/d/…?sign=…</code>，不占服务器带宽（要求浏览器能访问该地址）。
+        </p>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <label class="text-sm flex items-center gap-3 min-h-[44px]">启用 OpenList
+            <input id="oEnabled" type="checkbox" class="w-5 h-5 accent-violet-500" />
+          </label>
+          <label class="text-sm flex items-center gap-3 min-h-[44px]">校验 HTTPS 证书
+            <input id="oVerify" type="checkbox" class="w-5 h-5 accent-violet-500" checked />
+          </label>
+          <label class="text-sm block sm:col-span-2">OpenList 地址
+            <input id="oUrl" class="mt-1 w-full min-h-[44px] bg-zinc-800 rounded-xl px-3 py-2.5 text-sm break-all" placeholder="http://192.168.1.10:5244" autocomplete="off" />
+            <span class="text-xs text-zinc-500 block mt-1">站点根地址，不要带 <code>/api</code>；反代有子路径时一并写上</span>
+          </label>
+          <label class="text-sm block">用户名
+            <input id="oUser" class="mt-1 w-full min-h-[44px] bg-zinc-800 rounded-xl px-3 py-2.5" placeholder="admin" autocomplete="off" />
+          </label>
+          <label class="text-sm block">密码
+            <input id="oPass" type="password" class="mt-1 w-full min-h-[44px] bg-zinc-800 rounded-xl px-3 py-2.5" placeholder="留空不修改" autocomplete="new-password" />
+          </label>
+          <label class="text-sm block">两步验证码（可选）
+            <input id="oOtp" class="mt-1 w-full min-h-[44px] bg-zinc-800 rounded-xl px-3 py-2.5" placeholder="开启 2FA 时填当前 6 位码" autocomplete="off" />
+          </label>
+          <label class="text-sm block">根目录
+            <input id="oRoot" class="mt-1 w-full min-h-[44px] bg-zinc-800 rounded-xl px-3 py-2.5" value="/文件流转" placeholder="/文件流转" />
+          </label>
+          <label class="text-sm block sm:col-span-2">Token（可选，优先于账号密码）
+            <input id="oToken" class="mt-1 w-full min-h-[44px] bg-zinc-800 rounded-xl px-3 py-2.5 text-xs font-mono" placeholder="留空不修改；填了就不再用账号密码登录" autocomplete="off" />
+            <span class="text-xs text-zinc-500 block mt-1">可用浏览器登录 OpenList 后从 localStorage 取 <code>token</code>；有效期默认 48 小时，过期后需账密才能自动续期</span>
+          </label>
+          <label class="text-sm flex items-center gap-3 min-h-[44px]">直链下载（302）
+            <input id="oDirect" type="checkbox" class="w-5 h-5 accent-violet-500" checked />
+          </label>
+          <label class="text-sm block">超时 (秒)
+            <input id="oTimeout" type="number" inputmode="numeric" class="mt-1 w-full min-h-[44px] bg-zinc-800 rounded-xl px-3 py-2.5" value="300" />
+          </label>
+          <div class="flex flex-col sm:flex-row sm:items-center gap-2 sm:col-span-2">
+            <button type="button" onclick="testOpenlist()" class="tap min-h-[44px] px-4 py-2 bg-zinc-800 active:bg-zinc-700 rounded-xl text-sm w-full sm:w-auto">测试 OpenList（先保存）</button>
+            <span id="oTest" class="text-xs text-zinc-400 break-all"></span>
           </div>
         </div>
 
@@ -307,6 +353,17 @@
       document.getElementById('wPass').value = w.password_set ? '****' : '';
       document.getElementById('wRoot').value = w.root || '/文件流转';
       document.getElementById('wTimeout').value = w.timeout || 300;
+      const o = c.storage?.openlist || {};
+      document.getElementById('oEnabled').checked = !!o.enabled;
+      document.getElementById('oVerify').checked = o.verify_ssl !== false;
+      document.getElementById('oUrl').value = o.url || '';
+      document.getElementById('oUser').value = o.username || '';
+      document.getElementById('oPass').value = o.password_set ? '****' : '';
+      document.getElementById('oOtp').value = o.otp_code || '';
+      document.getElementById('oRoot').value = o.root || '/文件流转';
+      document.getElementById('oToken').value = o.token_set ? '****' : '';
+      document.getElementById('oDirect').checked = o.direct_link !== false;
+      document.getElementById('oTimeout').value = o.timeout || 300;
       const l = c.storage?.local || {};
       document.getElementById('lEnabled').checked = !!l.enabled;
       document.getElementById('lRoot').value = l.root || '';
@@ -341,6 +398,10 @@
       if(!mailVal || mailVal.includes('…') || mailVal.includes('...') || mailVal === '****') mailVal = '';
       let passVal = document.getElementById('yPass').value || '';
       if(!passVal || passVal === '****' || passVal.includes('…')) passVal = '';
+      let oPassVal = document.getElementById('oPass').value || '';
+      if(!oPassVal || oPassVal === '****' || oPassVal.includes('…')) oPassVal = '';
+      let oTokenVal = document.getElementById('oToken').value || '';
+      if(!oTokenVal || oTokenVal.includes('…') || oTokenVal === '****') oTokenVal = '';
       let wPassVal = document.getElementById('wPass').value || '';
       if(!wPassVal || wPassVal === '****' || wPassVal.includes('…')) wPassVal = '';
 
@@ -366,6 +427,18 @@
           local:{
             enabled:document.getElementById('lEnabled').checked,
             root:document.getElementById('lRoot').value.trim(),
+          },
+          openlist:{
+            enabled:document.getElementById('oEnabled').checked,
+            url:document.getElementById('oUrl').value.trim(),
+            username:document.getElementById('oUser').value.trim(),
+            password: oPassVal,
+            otp_code:document.getElementById('oOtp').value.trim(),
+            root:document.getElementById('oRoot').value.trim() || '/',
+            token: oTokenVal,
+            verify_ssl:document.getElementById('oVerify').checked,
+            direct_link:document.getElementById('oDirect').checked,
+            timeout:Number(document.getElementById('oTimeout').value)||300,
           },
           webdav:{
             enabled:document.getElementById('wEnabled').checked,
@@ -633,6 +706,22 @@
           resEl.textContent='已解析 parentFileId: '+d.resolved_folder_id;
           resEl.classList.remove('hidden');
         }
+      } else {
+        el.textContent = '失败: '+(d.error||JSON.stringify(d));
+        el.className='text-xs text-rose-400 break-all';
+      }
+    }
+    async function testOpenlist(){
+      const el=document.getElementById('oTest');
+      el.textContent='测试中…'; el.className='text-xs text-zinc-400 break-all';
+      let d={};
+      try{
+        const r=await fetch('/api/storage/openlist/test',{method:'POST'});
+        d=await r.json().catch(()=>({}));
+      }catch(e){ d={ok:false,error:'请求失败，请检查网络或地址'}; }
+      if(d.ok){
+        el.textContent = d.hint || 'OpenList 连接正常';
+        el.className='text-xs text-emerald-400 break-all';
       } else {
         el.textContent = '失败: '+(d.error||JSON.stringify(d));
         el.className='text-xs text-rose-400 break-all';

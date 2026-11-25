@@ -676,7 +676,7 @@ def _remote_id_from_meta(storage_path: str, remote_id: str = "") -> str:
 def _backend_path(storage_path: str, remote_id: str = "") -> str:
     if remote_id:
         return remote_id
-    for prefix in ("webdav://", "local://"):
+    for prefix in ("webdav://", "openlist://", "local://"):
         if storage_path.startswith(prefix):
             return storage_path[len(prefix) :]
     return storage_path
@@ -684,7 +684,7 @@ def _backend_path(storage_path: str, remote_id: str = "") -> str:
 
 # ---------- backend dispatch ----------
 
-SUPPORTED_BACKENDS = ("yun139", "webdav", "local")
+SUPPORTED_BACKENDS = ("yun139", "openlist", "webdav", "local")
 
 
 def _as_storage_error(e: Exception) -> StorageError:
@@ -695,7 +695,7 @@ def _as_storage_error(e: Exception) -> StorageError:
 
 
 def current_backend(cfg: Optional[Dict[str, Any]] = None) -> str:
-    """Return the active storage backend name (``yun139`` | ``webdav`` | ``local``)."""
+    """Return the active backend (``yun139`` | ``openlist`` | ``webdav`` | ``local``)."""
     cfg = cfg or load_config()
     raw = str((cfg.get("storage") or {}).get("backend") or "yun139").strip().lower()
     return raw if raw in SUPPORTED_BACKENDS else "yun139"
@@ -712,6 +712,17 @@ def backend_status() -> Tuple[str, str]:
             return name, "WebDAV 存储未启用：请在后台启用并填写地址"
         if not (w.get("url") or "").strip():
             return name, "WebDAV 地址为空：请在后台填写"
+        return name, ""
+    if name == "openlist":
+        o = st.get("openlist") or {}
+        if not o.get("enabled"):
+            return name, "OpenList 存储未启用：请在后台启用并填写地址"
+        if not (o.get("url") or "").strip():
+            return name, "OpenList 地址为空：请在后台填写"
+        if not (o.get("token") or "").strip() and not (
+            (o.get("username") or "").strip() and (o.get("password") or "").strip()
+        ):
+            return name, "未配置 OpenList 凭据：请填写 token 或用户名 + 密码"
         return name, ""
     if name == "local":
         loc = st.get("local") or {}
@@ -733,6 +744,10 @@ def require_backend() -> str:
         from app.core.webdav import WebDAVClient
 
         WebDAVClient().require()
+    elif name == "openlist":
+        from app.core.openlist import OpenListClient
+
+        OpenListClient().require()
     elif name == "local":
         from app.core.localstore import LocalStorageClient
 
@@ -752,6 +767,13 @@ def save_file(fileobj: BinaryIO, original_name: str, size: int = 0) -> Dict[str,
 
         try:
             return WebDAVClient().upload_stream(fileobj, original_name, size)
+        except Exception as e:
+            raise _as_storage_error(e) from e
+    if backend == "openlist":
+        from app.core.openlist import OpenListClient
+
+        try:
+            return OpenListClient().upload_stream(fileobj, original_name, size)
         except Exception as e:
             raise _as_storage_error(e) from e
     if backend == "local":
@@ -789,6 +811,13 @@ def open_file_bytes(storage_path: str, remote_id: str = "") -> bytes:
             return WebDAVClient().download_bytes(_backend_path(storage_path, remote_id))
         except Exception as e:
             raise _as_storage_error(e) from e
+    if (storage_path or "").startswith("openlist://"):
+        from app.core.openlist import OpenListClient
+
+        try:
+            return OpenListClient().download_bytes(_backend_path(storage_path, remote_id))
+        except Exception as e:
+            raise _as_storage_error(e) from e
     if (storage_path or "").startswith("local://"):
         from app.core.localstore import LocalStorageClient
 
@@ -804,6 +833,14 @@ def open_file_bytes(storage_path: str, remote_id: str = "") -> bytes:
 def get_download_url(storage_path: str, remote_id: str = "") -> str:
     """Return a browser-facing URL. WebDAV needs authenticated streaming, so it
     returns an empty string and the caller streams through the server."""
+    if (storage_path or "").startswith("openlist://"):
+        from app.core.openlist import OpenListClient
+
+        try:
+            return OpenListClient().get_download_url(_backend_path(storage_path, remote_id))
+        except Exception as e:
+            logger.warning("openlist direct link failed: %s", e)
+            return ""
     if (storage_path or "").startswith(("webdav://", "local://")):
         return ""
     yun = Yun139Client()
@@ -816,6 +853,12 @@ def stream_file(
 ) -> Tuple[Any, Any]:
     """Open a server-side stream; caller forwards bytes and closes both."""
     try:
+        if (storage_path or "").startswith("openlist://"):
+            from app.core.openlist import OpenListClient
+
+            return OpenListClient().open_stream(
+                _backend_path(storage_path, remote_id), range_header
+            )
         if (storage_path or "").startswith("local://"):
             from app.core.localstore import LocalStorageClient
 
@@ -837,6 +880,14 @@ def delete_file(backend: str, storage_path: str, remote_id: str = "") -> None:
             LocalStorageClient().delete(_backend_path(storage_path, remote_id))
         except Exception as e:
             logger.warning("local delete failed: %s", e)
+        return
+    if (storage_path or "").startswith("openlist://") or (backend or "").lower() == "openlist":
+        from app.core.openlist import OpenListClient
+
+        try:
+            OpenListClient().delete(_backend_path(storage_path, remote_id))
+        except Exception as e:
+            logger.warning("openlist delete failed: %s", e)
         return
     if (storage_path or "").startswith("webdav://") or (backend or "").lower() == "webdav":
         from app.core.webdav import WebDAVClient

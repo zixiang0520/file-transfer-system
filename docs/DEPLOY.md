@@ -3,7 +3,7 @@
 ## 1. 前置要求
 - Docker 24+（或 Docker Engine + Compose v2 插件），**或** 本机 Python 3.11+ + systemd
 - 开放端口（默认 **8790**），或用反向代理（Nginx / Caddy / OpenResty）
-- 任一存储后端：移动云盘账号（见 3.1）、WebDAV 服务（3.2）或本地磁盘（3.3）
+- 任一存储后端：移动云盘账号（见 3.1）、OpenList 服务（3.2）、WebDAV 服务（3.3）或本地磁盘（3.4）
 
 ```bash
 docker --version
@@ -38,9 +38,9 @@ docker compose logs -f --tail=100
 
 公网地址请在后台填写 **公网地址**（`site.public_base_url`），用于生成提取链接。
 
-## 3. 存储后端配置（三选一）
+## 3. 存储后端配置（四选一）
 
-后台 → **存储后端** 选择 `yun139` / `webdav` / `local`，保存后新上传生效；旧文件仍按各自后端读取。
+后台 → **存储后端** 选择 `yun139` / `openlist` / `webdav` / `local`，保存后新上传生效；旧文件仍按各自后端读取。
 
 ### 3.1 移动云盘（yun139 · 对齐 OpenList）
 
@@ -76,7 +76,38 @@ docker compose logs -f --tail=100
 - Cookie / 密码 / Authorization **只写后台或服务器 `data/config.json`**
 - **禁止**提交 Git、打进镜像、写进 compose 明文、发到公开聊天
 
-### 3.2 WebDAV
+### 3.2 OpenList
+
+适用于已经跑着 **OpenList**（[doc.oplist.org.cn](https://doc.oplist.org.cn/)）的机器：网盘驱动、多账号、目录缓存全交给 OpenList，本系统只用它的 REST API 做「建目录 / 上传 / 取直链 / 删除」。
+
+| 字段 | 说明 |
+|------|------|
+| 启用 OpenList | 勾选 |
+| 地址 | 站点根地址，如 `http://192.168.1.10:5244`、`https://pan.example.com`（**不要带 `/api`**，反代有子路径时一并写上） |
+| 用户名 / 密码 | OpenList 账号，系统自动登录拿 token，401 自动重登 |
+| 两步验证码 | 账号开了 2FA 时填当前 6 位码（可留空） |
+| Token | 可选，优先于账密；OpenList 浏览器 localStorage 里的 `token`，默认 48h 过期，只填 token 时需手更 |
+| 根目录 | 默认 `/文件流转`，不存在自动创建 |
+| 直链下载（302） | 默认开：下载直接 302 到 `OpenList/d/路径?sign=…`，不占本机带宽；若 OpenList 只在内网可达，请关掉改走服务端中转 |
+| 校验 HTTPS 证书 | 自签证书内网可关闭 |
+| 超时 | 大文件上传建议 300s+ |
+
+保存后点 **「测试 OpenList」**（登录 → 列根目录 → 写探针文件再删除）。文件按 `根目录/年/月/<uuid>_<文件名>` 存放。
+
+对接的接口（与 [OpenList API 文档](https://doc.oplist.org.cn/api/apidocs) 一致）：
+
+| 用途 | 接口 |
+|------|------|
+| 登录换 token | `POST /api/auth/login`（`username` / `password` / `otp_code`） |
+| 建目录 | `POST /api/fs/mkdir` |
+| 上传 | `PUT /api/fs/put`，头 `File-Path: <URL 编码后的完整路径>` |
+| 取直链 sign | `POST /api/fs/get` → `data.sign` → `GET /d/<路径>?sign=<sign>` |
+| 列目录 | `POST /api/fs/list` |
+| 删除 | `POST /api/fs/remove`（`dir` + `names`） |
+
+> OpenList 4.x 的 `/d/` 直链必须带 `sign`，不再允许匿名裸链；本系统会在每次下载前实时调 `fs/get` 取签名。
+
+### 3.3 WebDAV
 
 适用于 Alist / 群晖 / Nextcloud / 坚果云 / 飞牛自建 WebDAV。
 
@@ -91,7 +122,7 @@ docker compose logs -f --tail=100
 
 保存后点 **「测试 WebDAV 连接」**（会先写探针文件再删除）。文件按 `根目录/年/月/` 存放，下载经服务端流式转发并支持 Range。
 
-### 3.3 本地磁盘
+### 3.4 本地磁盘
 
 适用于 NAS 本机盘 / 挂载共享目录 / 内网无云盘场景。
 

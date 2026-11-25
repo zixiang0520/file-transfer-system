@@ -345,6 +345,45 @@ async def api_config_save(request: Request, _: None = Depends(require_admin)):
                 lcfg["enabled"] = bool(l["enabled"])
             if "root" in l and l["root"] is not None:
                 lcfg["root"] = str(l["root"]).strip()
+        if "openlist" in st and isinstance(st["openlist"], dict):
+            o = st["openlist"]
+            ocfg = cfg["storage"].setdefault("openlist", {})
+            if "enabled" in o:
+                ocfg["enabled"] = bool(o["enabled"])
+            if "url" in o and o["url"] is not None:
+                ocfg["url"] = str(o["url"]).strip()
+            for k in ("username", "root", "otp_code"):
+                if k in o and o[k] is not None:
+                    ocfg[k] = str(o[k]).strip()
+            if "verify_ssl" in o:
+                ocfg["verify_ssl"] = bool(o["verify_ssl"])
+            if "direct_link" in o:
+                ocfg["direct_link"] = bool(o["direct_link"])
+            if "timeout" in o:
+                try:
+                    ocfg["timeout"] = max(10, min(3600, int(o["timeout"])))
+                except (TypeError, ValueError):
+                    pass
+            for k in ("token", "password"):
+                if k in o:
+                    val = o[k]
+                    if not isinstance(val, str):
+                        continue
+                    val = val.strip()
+                    if k == "token" and val.lower().startswith("bearer "):
+                        val = val[7:].strip()
+                    if (
+                        not val
+                        or "…" in val
+                        or "..." in val
+                        or val == "****"
+                        or set(val) <= {"*"}
+                    ):
+                        continue
+                    if val != ocfg.get(k):
+                        ocfg[k] = val
+                        if k == "token":
+                            ocfg["token_saved_at"] = int(time.time())
         if "webdav" in st and isinstance(st["webdav"], dict):
             w = st["webdav"]
             wcfg = cfg["storage"].setdefault("webdav", {})
@@ -1044,9 +1083,16 @@ def api_yun139_test(_: None = Depends(require_admin)):
 
 @app.get("/api/upload-mode")
 def api_upload_mode():
-    """前端据此决定：浏览器直传云盘（yun139）还是服务器中转（webdav）。"""
+    """前端据此决定：浏览器直传云盘（yun139）还是服务器中转（openlist/webdav/local）。"""
     backend = store.current_backend()
     return {"backend": backend, "direct": backend == "yun139"}
+
+
+@app.post("/api/storage/openlist/test")
+def api_openlist_test(_: None = Depends(require_admin)):
+    from app.core.openlist import OpenListClient
+
+    return OpenListClient().test_connection()
 
 
 @app.post("/api/storage/webdav/test")
