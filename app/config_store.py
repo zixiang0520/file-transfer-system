@@ -112,6 +112,18 @@ DEFAULTS: Dict[str, Any] = {
         "app_id": "",
         "client_secret": "",
     },
+    "ai_review": {
+        "enabled": False,
+        # OpenAI 兼容接口，如 https://api.example.com/v1
+        "base_url": "",
+        "api_key": "",
+        "model": "",
+        "vision_model": "",
+        "max_review_mb": 10,
+        "timeout": 30,
+        # true = 拿不到审核结论就拒绝上传（默认 false：审核故障不拖垮主服务）
+        "fail_closed": False,
+    },
     "proxy": {
         "enabled": False,
         "all": "",

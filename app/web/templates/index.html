@@ -449,12 +449,10 @@
         throw new Error('中转任务创建失败：' + ((init2 && init2.error) || ('HTTP ' + initResp.status)));
       }
       try {
-        // AI 内容审核（降级中转路径）：小文件中转前先送审
-        const aiMax2 = Number(init2.ai_max_review_mb) || 0;
-        if (init2.ai_enabled && aiMax2 > 0) {
+        // AI 内容审核（降级中转路径）：服务端判定缺结论的文件，中转前先送审
+        if (init2.ai_enabled) {
           for (const fm of (init2.files || [])) {
-            if (fm.exist || fm.rapid) continue;
-            if ((fm.size || 0) > aiMax2 * 1024 * 1024) continue;
+            if (!fm.needs_review) continue;
             const afile = selectedFiles.find(x => x.name === fm.name && x.size === fm.size);
             if (!afile) continue;
             aiWaitUI(true, fm.name);
@@ -643,12 +641,11 @@
           throw new Error(initData.error || ('创建上传任务失败 HTTP ' + initResp.status));
         }
 
-        // 3) AI 内容审核：小文件(≤上限)在分片上传前先送审，reject 立即终止（零流量浪费）
-        const aiMax = Number(initData.ai_max_review_mb) || 0;
-        if (initData.ai_enabled && aiMax > 0) {
+        // 3) AI 内容审核：服务端标记 needs_review 的文件在分片上传前先送审
+        //    （秒传/急速上传命中同样要审——审核结论按 SHA 复用，不因"已存在"而跳过）
+        if (initData.ai_enabled) {
           for (const fm of initData.files) {
-            if (fm.exist || fm.rapid) continue;
-            if ((fm.size || 0) > aiMax * 1024 * 1024) continue;
+            if (!fm.needs_review) continue;
             const afile = selectedFiles.find(x => x.name === fm.name && x.size === fm.size);
             if (!afile) continue;
             aiWaitUI(true, fm.name);

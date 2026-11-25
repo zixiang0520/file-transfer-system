@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import json
 import logging
 import re
@@ -97,6 +98,26 @@ def max_bytes() -> int:
     return int(float((cfg.get("upload") or {}).get("max_file_size_mb") or 500) * 1024 * 1024)
 
 
+def _read_prefix(content: Any, limit: int) -> bytes:
+    """读取文件对象前 limit 字节并复位游标（用于中转路径的内容审核）。"""
+    limit = max(0, int(limit))
+    try:
+        pos = content.tell()
+    except Exception:
+        pos = None
+    try:
+        data = content.read(limit)
+    except Exception:
+        return b""
+    finally:
+        if pos is not None:
+            try:
+                content.seek(pos)
+            except Exception:
+                pass
+    return data if isinstance(data, bytes) else b""
+
+
 def create_package_with_files(
     *,
     files: Sequence[Tuple[str, Any, str, int]],
@@ -154,6 +175,34 @@ def create_package_with_files(
             raise TransferError(f"{pure} 超过大小限制 {up.get('max_file_size_mb')}MB")
         if size <= 0:
             raise TransferError(f"{pure} 是空文件")
+        # AI 审核第一道：文件名/标题
+        ar = ai_review.review_filename(pure, title=title)
+        db.add_ai_review(
+            file_name=pure, kind="filename", verdict=ar.get("verdict", "skip"),
+            reason=ar.get("reason", ""),
+        )
+        if ar.get("verdict") == "reject":
+            raise TransferError(f"{pure} 未通过安全审核：{ar.get('reason') or '内容违规'}", 403)
+        # AI 审核第二道：内容（中转路径服务器手里有字节，直接审，按 SHA 复用结论）
+        if ai_review.reviewable(pure, size):
+            data = _read_prefix(content, ai_review.max_review_mb() * 1024 * 1024)
+            if data:
+                sha_c = hashlib.sha256(data).hexdigest()
+                cached = ai_review.cached_verdict(sha_c)
+                if cached and (cached.get("verdict") or "").lower() == "reject":
+                    raise TransferError(
+                        f"{pure} 未通过内容审核：{cached.get('reason') or '内容违规'}", 403
+                    )
+                if not cached:
+                    res = ai_review.review_content(pure, data, ctype or "")
+                    db.add_ai_review(
+                        file_name=pure, kind="content", sha256=sha_c,
+                        verdict=res.get("verdict", "skip"), reason=res.get("reason", ""),
+                    )
+                    if res.get("verdict") == "reject":
+                        raise TransferError(
+                            f"{pure} 未通过内容审核：{res.get('reason') or '内容违规'}", 403
+                        )
         prepared.append((pure, content, ctype or "application/octet-stream", size))
 
     hours = expire_hours
@@ -297,17 +346,25 @@ def init_direct_upload(
         ar = ai_review.review_filename(pure, title=title)
         db.add_ai_review(
             file_name=pure, kind="filename", verdict=ar.get("verdict", "skip"),
-            reason=ar.get("reason", ""),
+            reason=ar.get("reason", ""), sha256=sha,
         )
         if ar.get("verdict") == "reject":
             raise TransferError(
                 f"{pure} 未通过安全审核：{ar.get('reason') or '内容违规'}", 403
             )
+        # 秒传/急速上传 ≠ 免审：有 reject 结论直接拒；只有 pass 结论才能免送审。
+        cached = ai_review.cached_verdict(sha)
+        if cached and (cached.get("verdict") or "").lower() == "reject":
+            raise TransferError(
+                f"{pure} 未通过内容审核：{cached.get('reason') or '内容违规'}", 403
+            )
+        need_review = bool(ai_review.reviewable(pure, size) and not cached)
         prepared.append(
             {
                 "name": pure,
                 "size": size,
                 "sha256": sha,
+                "needs_review": need_review,
                 "content_type": str(fm.get("content_type") or "application/octet-stream"),
             }
         )
@@ -367,6 +424,7 @@ def init_direct_upload(
                     "name": fm["name"],
                     "size": fm["size"],
                     "sha256": fm["sha256"],
+                    "needs_review": bool(fm.get("needs_review")),
                     "content_type": fm["content_type"],
                     "file_id": task["file_id"],
                     "upload_id": task["upload_id"],
@@ -425,6 +483,35 @@ def complete_direct_upload(
                 ensure_ascii=False,
             ),
         )
+        # 硬闸：内容审核没有结论、或结论为 reject 的文件，不允许完成上传。
+        # 秒传/急速上传命中同样受约束——审核结论按 SHA 复用，与是否真的传了字节无关。
+        for fm in files:
+            g_name = str(fm.get("name") or "")
+            g_size = int(fm.get("size") or 0)
+            g_sha = str(fm.get("sha256") or "").strip().lower()
+            if not ai_review.reviewable(g_name, g_size):
+                continue
+            g_row = ai_review.cached_verdict(g_sha)
+            if g_row and (g_row.get("verdict") or "").lower() == "reject":
+                raise TransferError(
+                    f"{g_name} 未通过内容审核：{g_row.get('reason') or '内容违规'}", 403
+                )
+            if g_row:
+                continue
+            # 没有可复用的结论：要么是压根没送审（拦），要么是送审但没跑成（按开关处理）
+            latest = db.latest_content_verdict(g_sha)
+            if latest is None:
+                raise TransferError(
+                    f"{g_name} 尚未完成内容审核，请重新上传（会自动送审）", 403
+                )
+            if ai_review.fail_closed():
+                raise TransferError(
+                    f"{g_name} 内容审核未完成：{latest.get('reason') or '未知原因'}", 403
+                )
+            logger.warning(
+                "ai gate: %s sha=%s 审核未得出结论(%s)，按 fail-open 放行",
+                g_name, g_sha[:12], latest.get("reason") or "-",
+            )
         for fm in files:
             file_id = str(fm.get("file_id") or "")
             upload_id = str(fm.get("upload_id") or "")

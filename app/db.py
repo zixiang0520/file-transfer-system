@@ -103,11 +103,17 @@ def init_db() -> None:
                     kind TEXT DEFAULT '',
                     verdict TEXT DEFAULT '',
                     reason TEXT DEFAULT '',
+                    sha256 TEXT DEFAULT '',
                     created_at REAL NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_ai_reviews_time ON ai_reviews(created_at);
                 """
             )
+            # 迁移：老库的 ai_reviews 没有 sha256 列（审核结论按 SHA 复用所需）
+            cols = {r["name"] for r in con.execute("PRAGMA table_info(ai_reviews)").fetchall()}
+            if "sha256" not in cols:
+                con.execute("ALTER TABLE ai_reviews ADD COLUMN sha256 TEXT DEFAULT ''")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_ai_reviews_sha ON ai_reviews(sha256)")
             con.commit()
         finally:
             con.close()
@@ -595,18 +601,51 @@ def add_ai_review(
     kind: str = "",
     verdict: str = "",
     reason: str = "",
+    sha256: str = "",
 ) -> Dict[str, Any]:
     now = time.time()
     with _lock:
         con = _conn()
         try:
             con.execute(
-                """INSERT INTO ai_reviews (package_id, file_name, kind, verdict, reason, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (int(package_id or 0), file_name or "", kind or "", verdict or "", reason or "", now),
+                """INSERT INTO ai_reviews
+                   (package_id, file_name, kind, verdict, reason, sha256, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    int(package_id or 0),
+                    file_name or "",
+                    kind or "",
+                    verdict or "",
+                    reason or "",
+                    (sha256 or "").strip().lower(),
+                    now,
+                ),
             )
             con.commit()
             return {"ok": True}
+        finally:
+            con.close()
+
+
+def latest_content_verdict(sha256: str) -> Optional[Dict[str, Any]]:
+    """该 SHA 最近一次内容审核结论（任意 verdict），没有则 None。
+
+    秒传/急速上传命中时用它复用结论：传过一次的文件不必重复花 LLM 钱，
+    但也不会因为「已经存在」而跳过审核。
+    """
+    sha = (sha256 or "").strip().lower()
+    if not sha:
+        return None
+    with _lock:
+        con = _conn()
+        try:
+            row = con.execute(
+                """SELECT * FROM ai_reviews
+                   WHERE sha256 = ? AND kind = 'content'
+                   ORDER BY created_at DESC LIMIT 1""",
+                (sha,),
+            ).fetchone()
+            return dict(row) if row else None
         finally:
             con.close()
 

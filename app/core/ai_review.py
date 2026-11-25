@@ -14,10 +14,12 @@ import base64
 import json
 import logging
 import re
+import time
 from typing import Any, Dict
 
 import httpx
 
+from app import db
 from app.config_store import load_config
 
 logger = logging.getLogger("fts.ai_review")
@@ -56,6 +58,53 @@ def max_review_mb() -> int:
     except (TypeError, ValueError):
         v = 10
     return max(1, min(v, 100))
+
+
+PASS_TTL_HOURS = 24 * 7  # pass 结论的复用窗口；reject 永久复用
+
+
+def fail_closed() -> bool:
+    """审核没跑成（skip）时是否也拦上传。
+
+    默认 False：模型故障/超大文件不该拖垮上传主服务（沿用原有设计）。
+    后台把 ai_review.fail_closed 设为 true 即切换为「拿不到结论就不许传」。
+    """
+    return bool(cfg().get("fail_closed"))
+
+
+def supported(filename: str) -> bool:
+    """该文件类型是否在内容审核能力范围内（未启用不算）。"""
+    name = filename or ""
+    ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    return ext in TEXT_EXTS or ext in IMAGE_EXTS
+
+
+def reviewable(filename: str, size: int) -> bool:
+    """该文件是否「必须」经过内容审核（决定 complete 是否硬拦）。"""
+    if not enabled():
+        return False
+    if not supported(filename):
+        return False
+    return int(size or 0) <= max_review_mb() * 1024 * 1024
+
+
+def cached_verdict(sha256: str) -> Dict[str, Any] | None:
+    """按 SHA 复用审核结论。
+
+    reject 永久生效（防止同一份违规文件换个包再传）；pass 有 TTL，
+    过期后重新审。skip 不作为有效结论——它代表「审核没跑成」，不能拿来
+    给文件背书，仍需重新送审。
+    """
+    row = db.latest_content_verdict(sha256)
+    if not row:
+        return None
+    verdict = (row.get("verdict") or "").lower()
+    if verdict == "reject":
+        return row
+    if verdict == "pass":
+        age_h = (time.time() - float(row.get("created_at") or 0)) / 3600.0
+        return row if age_h <= PASS_TTL_HOURS else None
+    return None
 
 
 def _chat(messages, *, model: str = "", timeout: float = 0) -> str:

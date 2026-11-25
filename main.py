@@ -10,6 +10,7 @@ import re
 import shutil
 import threading
 import time
+import hashlib
 from functools import partial
 from pathlib import Path
 from typing import List, Optional
@@ -93,8 +94,8 @@ app.add_middleware(GZipMiddleware, minimum_size=1024)
 # part 接口收片后立即返回 200（入队），后台 worker 按队列顺序转发 139，
 # 这样 NAS 转片 N 时浏览器已经在传片 N+1，实现"边收边转"流水线。
 PIPELINE_DIR = Path("/tmp/pipeline")
-# AI 内容审核结论缓存：(package_id, file_id) -> {verdict, reason, ts}；complete 时校验
-_ai_review_results: dict = {}
+# AI 审核结论一律落库（ai_reviews.sha256），complete 时按 SHA 复核；
+# 不再用内存字典——进程重启会丢，且它是"前端可跳过审核"的根源。
 _pipeline_state: dict = {}  # file_id -> {"queue", "worker", "dir", "pending", "error"}
 
 
@@ -434,6 +435,8 @@ async def api_config_save(request: Request, _: None = Depends(require_admin)):
         for k in ("base_url", "model", "vision_model"):
             if k in a and a[k] is not None:
                 ai_cfg[k] = str(a[k]).strip()
+        if "fail_closed" in a:
+            ai_cfg["fail_closed"] = bool(a["fail_closed"])
         if "max_review_mb" in a:
             try:
                 ai_cfg["max_review_mb"] = max(1, min(100, int(a["max_review_mb"])))
@@ -1053,23 +1056,43 @@ async def api_ai_review_file(
     filename: str = Form(""),
     file: UploadFile = File(...),
 ):
-    """小文件内容审核：前端在 complete 前主动 POST 一份文件内容。
-    reject 结论会被 /complete 校验并拒绝完成上传；未启用/失败一律放行(skip)。"""
+    """小文件内容审核：前端在 complete 前把文件内容 POST 过来。
+
+    服务端自己算 SHA-256 作为结论的键，不信任前端传的 sha：
+    - 同一份内容只花一次 LLM 钱（秒传/急速上传命中时直接复用结论）
+    - /complete 按 SHA 复核结论，前端跳过送审会被拦下
+    """
     if not ai_review.enabled():
         return {"ok": True, "verdict": "skip", "reason": "AI 审核未启用"}
+    pkg = db.get_package(int(package_id))
+    if not pkg or pkg.get("status") != "active":
+        raise HTTPException(status_code=400, detail="package_id 无效")
     fname = filename or (file.filename or "")
     content = await file.read()
+    sha = hashlib.sha256(content).hexdigest()
+    cached = ai_review.cached_verdict(sha)
+    if cached:
+        return {
+            "ok": True,
+            "cached": True,
+            "verdict": cached.get("verdict"),
+            "reason": cached.get("reason", ""),
+        }
     if len(content) > ai_review.max_review_mb() * 1024 * 1024:
         res = {"verdict": "skip", "reason": "文件超出 AI 审核大小上限"}
     else:
-        res = ai_review.review_content(fname, content, file.content_type or "")
-    _ai_review_results[(int(package_id), str(file_id))] = {**res, "ts": time.time()}
+        res = await run_in_threadpool(
+            partial(ai_review.review_content, fname, content, file.content_type or "")
+        )
     db.add_ai_review(
         package_id=int(package_id), file_name=fname, kind="content",
-        verdict=res.get("verdict", ""), reason=res.get("reason", ""),
+        verdict=res.get("verdict", ""), reason=res.get("reason", ""), sha256=sha,
     )
     if res.get("verdict") == "reject":
-        logger.warning("ai review REJECT: pkg=%s file=%s reason=%s", package_id, fname, res.get("reason"))
+        logger.warning(
+            "ai review REJECT: pkg=%s file=%s sha=%s reason=%s",
+            package_id, fname, sha[:12], res.get("reason"),
+        )
     return {"ok": True, "verdict": res.get("verdict"), "reason": res.get("reason", "")}
 
 
