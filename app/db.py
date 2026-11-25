@@ -255,21 +255,53 @@ def bump_download(package_id: int) -> int:
             con.close()
 
 
-def list_packages(limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
+def list_packages(
+    limit: int = 100, offset: int = 0, keyword: str = ""
+) -> List[Dict[str, Any]]:
+    """列出包裹（id 倒序）。keyword 命中提取码 / 标题 / 上传 IP / 文件名。"""
+    where, params = _package_filter(keyword)
     with _lock:
         con = _conn()
         try:
             rows = con.execute(
-                """
+                f"""
                 SELECT p.*, (SELECT COUNT(*) FROM files f WHERE f.package_id = p.id) AS file_count,
                        (SELECT COALESCE(SUM(size),0) FROM files f WHERE f.package_id = p.id) AS total_size
                 FROM packages p
+                {where}
                 ORDER BY p.id DESC
                 LIMIT ? OFFSET ?
                 """,
-                (limit, offset),
+                (*params, limit, offset),
             ).fetchall()
             return [dict(r) for r in rows]
+        finally:
+            con.close()
+
+
+def _package_filter(keyword: str) -> tuple[str, tuple]:
+    kw = (keyword or "").strip()
+    if not kw:
+        return "", ()
+    like = f"%{kw}%"
+    return (
+        """WHERE p.extract_code LIKE ?
+              OR COALESCE(p.title,'') LIKE ?
+              OR COALESCE(p.uploader_ip,'') LIKE ?
+              OR EXISTS (SELECT 1 FROM files f WHERE f.package_id = p.id AND f.original_name LIKE ?)""",
+        (like, like, like, like),
+    )
+
+
+def count_packages(keyword: str = "") -> int:
+    where, params = _package_filter(keyword)
+    with _lock:
+        con = _conn()
+        try:
+            row = con.execute(
+                f"SELECT COUNT(*) AS n FROM packages p {where}", params
+            ).fetchone()
+            return int(row["n"]) if row else 0
         finally:
             con.close()
 

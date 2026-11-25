@@ -836,8 +836,15 @@ def api_download_selected(code: str, ids: str = ""):
 
 
 @app.get("/api/packages")
-def api_packages(limit: int = 100, offset: int = 0, _: None = Depends(require_admin)):
-    rows = db.list_packages(limit=limit, offset=offset)
+def api_packages(
+    limit: int = 100,
+    offset: int = 0,
+    q: str = "",
+    _: None = Depends(require_admin),
+):
+    limit = max(1, min(500, int(limit or 100)))
+    offset = max(0, int(offset or 0))
+    rows = db.list_packages(limit=limit, offset=offset, keyword=q)
     banned = {b["ip"] for b in db.list_banned_ips()}
     out = []
     for r in rows:
@@ -852,7 +859,7 @@ def api_packages(limit: int = 100, offset: int = 0, _: None = Depends(require_ad
                 ],
             }
         )
-    return {"items": out}
+    return {"items": out, "total": db.count_packages(q), "limit": limit, "offset": offset}
 
 
 @app.delete("/api/packages/{package_id}")

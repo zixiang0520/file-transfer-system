@@ -33,14 +33,24 @@
 
     <div id="dash" class="hidden space-y-5 sm:space-y-6">
       <div class="flex gap-2 sm:gap-3 flex-wrap">
-        <button type="button" onclick="loadPackages()" class="tap flex-1 sm:flex-none min-h-[44px] px-4 py-2 bg-zinc-800 active:bg-zinc-700 rounded-xl text-sm">刷新包裹</button>
+        <button type="button" onclick="refreshPackages()" class="tap flex-1 sm:flex-none min-h-[44px] px-4 py-2 bg-zinc-800 active:bg-zinc-700 rounded-xl text-sm">刷新包裹</button>
         <button type="button" onclick="cleanup()" class="tap flex-1 sm:flex-none min-h-[44px] px-4 py-2 bg-zinc-800 active:bg-zinc-700 rounded-xl text-sm">清理过期</button>
         <button type="button" onclick="logout()" class="tap flex-1 sm:flex-none min-h-[44px] px-4 py-2 bg-red-900/40 active:bg-red-900/60 rounded-xl text-sm">退出</button>
       </div>
 
       <div class="bg-zinc-900 rounded-2xl sm:rounded-3xl p-4 sm:p-6">
-        <h2 class="font-medium mb-4">提取码 / 包裹管理</h2>
-        <div id="pkgList" class="space-y-3 text-sm"></div>
+        <button type="button" onclick="togglePkg()" class="tap w-full flex items-center justify-between gap-3 text-left min-h-[44px]">
+          <span class="font-medium">提取码 / 包裹管理<span id="pkgCount" class="text-xs text-zinc-500 font-normal ml-2"></span></span>
+          <span class="text-zinc-400 text-sm shrink-0"><span id="pkgToggleText">展开</span> <i id="pkgChevron" class="fa-solid fa-chevron-down text-xs ml-1"></i></span>
+        </button>
+        <div id="pkgPanel" class="hidden pt-4">
+          <div class="flex flex-col sm:flex-row gap-2 mb-3">
+            <input id="pkgSearch" class="flex-1 min-h-[44px] bg-zinc-800 rounded-xl px-3 py-2.5 text-sm" placeholder="搜索提取码 / 标题 / 上传 IP / 文件名" />
+            <button type="button" onclick="loadPackages(0)" class="tap min-h-[44px] px-4 py-2 bg-zinc-800 active:bg-zinc-700 rounded-xl text-sm">搜索</button>
+          </div>
+          <div id="pkgList" class="space-y-3 text-sm"></div>
+          <div id="pkgPager" class="hidden flex items-center justify-between gap-2 mt-3 text-xs text-zinc-400"></div>
+        </div>
       </div>
 
       <div class="bg-zinc-900 rounded-2xl sm:rounded-3xl p-4 sm:p-6">
@@ -324,7 +334,7 @@
       if(!r.ok){document.getElementById('loginErr').textContent='登录失败';document.getElementById('loginErr').classList.remove('hidden');return;}
       document.getElementById('loginBox').classList.add('hidden');
       document.getElementById('dash').classList.remove('hidden');
-      await loadCfg(); await loadPackages(); await loadBans();
+      await loadCfg(); await loadPkgCount(); await loadBans();
     }
     async function logout(){await fetch('/api/logout',{method:'POST'}); location.reload();}
     async function loadCfg(){
@@ -477,11 +487,57 @@
         errEl.classList.remove('hidden');
       }
     }
-    async function loadPackages(){
-      const r=await fetch('/api/packages'); if(!r.ok) return;
+    let pkgState={offset:0,limit:20,total:0,q:''};
+    function togglePkg(){
+      const panel=document.getElementById('pkgPanel');
+      const hidden=panel.classList.contains('hidden');
+      panel.classList.toggle('hidden',!hidden);
+      document.getElementById('pkgToggleText').textContent = hidden ? '收起' : '展开';
+      document.getElementById('pkgChevron').className = 'fa-solid fa-chevron-'+(hidden?'up':'down')+' text-xs ml-1';
+      if(hidden && !panel.dataset.loaded){ panel.dataset.loaded='1'; loadPackages(0); }
+    }
+    async function loadPkgCount(){
+      try{
+        const r=await fetch('/api/packages?limit=1&offset=0');
+        if(!r.ok) return;
+        const d=await r.json();
+        pkgState.total=Number(d.total||0);
+        const cnt=document.getElementById('pkgCount');
+        if(cnt) cnt.textContent='('+pkgState.total+')';
+      }catch(e){}
+    }
+    async function reloadPkg(){
+      const panel=document.getElementById('pkgPanel');
+      if(panel.dataset.loaded && !panel.classList.contains('hidden')){
+        await loadPackages(pkgState.offset);
+      } else {
+        await loadPkgCount();
+      }
+    }
+    function refreshPackages(){
+      const panel=document.getElementById('pkgPanel');
+      if(panel.classList.contains('hidden')){
+        panel.dataset.loaded='1';
+        togglePkg();
+      } else {
+        loadPackages(pkgState.offset);
+      }
+    }
+    async function loadPackages(offset){
+      const q=(document.getElementById('pkgSearch')?.value||'').trim();
+      if(typeof offset==='number') pkgState.offset=offset;
+      pkgState.q=q;
+      const params=new URLSearchParams({limit:pkgState.limit,offset:pkgState.offset,q});
+      let r;
+      try { r=await fetch('/api/packages?'+params.toString()); } catch(e){ return; }
+      if(!r.ok) return;
       const data=await r.json();
+      const items=data.items||[];
+      pkgState.total=Number(data.total||items.length);
       const box=document.getElementById('pkgList'); box.innerHTML='';
-      (data.items||[]).forEach(p=>{
+      const cnt=document.getElementById('pkgCount');
+      if(cnt) cnt.textContent = pkgState.total ? '('+pkgState.total+')' : '(0)';
+      items.forEach(p=>{
         const div=document.createElement('div');
         div.className='flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 bg-zinc-800/70 rounded-2xl px-3 sm:px-4 py-3';
         const ip = p.uploader_ip || '';
@@ -492,19 +548,76 @@
         const more = (p.files||[]).length>3 ? '…' : '';
         div.innerHTML=`
           <div class="min-w-0">
-            <div class="font-mono text-base sm:text-lg tracking-widest break-all">${esc(p.extract_code)}</div>
+            <div class="flex items-center gap-2 flex-wrap">
+              <a class="tap font-mono text-base sm:text-lg tracking-widest break-all text-violet-300 hover:text-violet-200 underline decoration-dotted underline-offset-4" href="/extract?code=${encodeURIComponent(p.extract_code)}" target="_blank" rel="noopener" title="打开提取页">${esc(p.extract_code)}</a>
+              <button type="button" class="tap text-xs text-zinc-400 hover:text-white px-1.5 py-0.5 rounded border border-zinc-700" onclick="copyCode('${esc(p.extract_code)}', this)">复制</button>
+            </div>
             <div class="text-xs text-zinc-400 mt-1 leading-relaxed">${p.file_count||0} 文件 · ${fmtSize(p.total_size)} · 过期 ${fmtTime(p.expire_at)} · 下载 ${p.download_count||0}${p.max_extracts?(' / 限'+p.max_extracts):''}</div>
             <div class="text-xs text-zinc-500 mt-1 truncate">文件：${esc(names)}${more}</div>
             <div class="text-xs text-zinc-300 mt-1">上传 IP：${ipHtml}</div>
           </div>
           <div class="flex flex-wrap gap-2 w-full sm:w-auto">
-            <a class="tap flex-1 sm:flex-none text-center min-h-[40px] px-3 py-2 bg-zinc-700 active:bg-zinc-600 rounded-lg" href="/extract?code=${encodeURIComponent(p.extract_code)}" target="_blank">查看</a>
+            <a class="tap flex-1 sm:flex-none text-center min-h-[40px] px-3 py-2 bg-zinc-700 active:bg-zinc-600 rounded-lg" href="/extract?code=${encodeURIComponent(p.extract_code)}" target="_blank" rel="noopener">查看</a>
             ${ip && !p.ip_banned ? `<button type="button" class="tap flex-1 sm:flex-none min-h-[40px] px-3 py-2 bg-amber-900/50 active:bg-amber-900/70 rounded-lg" onclick="banPkgIp(${p.id}, '${esc(ip)}')">封禁 IP</button>` : ''}
             <button type="button" class="tap flex-1 sm:flex-none min-h-[40px] px-3 py-2 bg-red-900/50 active:bg-red-900/70 rounded-lg" onclick="delPkg(${p.id})">删除</button>
           </div>`;
         box.appendChild(div);
       });
-      if(!(data.items||[]).length) box.innerHTML='<div class="text-zinc-500">暂无包裹</div>';
+      if(!items.length && pkgState.offset>0){
+        pkgState.offset=Math.max(0,pkgState.offset-pkgState.limit);
+        return loadPackages(pkgState.offset);
+      }
+      if(!items.length){
+        box.innerHTML = pkgState.q
+          ? '<div class="text-zinc-500">没有匹配的包裹</div>'
+          : '<div class="text-zinc-500">暂无包裹</div>';
+      }
+      const pager=document.getElementById('pkgPager');
+      const from=pkgState.total?pkgState.offset+1:0;
+      const to=Math.min(pkgState.offset+items.length,pkgState.total);
+      if(pkgState.total>pkgState.limit){
+        pager.classList.remove('hidden');
+        pager.innerHTML=`
+          <button type="button" class="tap min-h-[40px] px-3 py-2 bg-zinc-800 active:bg-zinc-700 rounded-lg ${pkgState.offset<=0?'opacity-40 pointer-events-none':''}" onclick="loadPackages(${Math.max(0,pkgState.offset-pkgState.limit)})">上一页</button>
+          <span>${from}–${to} / 共 ${pkgState.total} 条</span>
+          <button type="button" class="tap min-h-[40px] px-3 py-2 bg-zinc-800 active:bg-zinc-700 rounded-lg ${to>=pkgState.total?'opacity-40 pointer-events-none':''}" onclick="loadPackages(${pkgState.offset+pkgState.limit})">下一页</button>`;
+      } else {
+        pager.classList.add('hidden'); pager.innerHTML='';
+      }
+    }
+    function legacyCopy(text){
+      const ta=document.createElement('textarea');
+      ta.value=text;
+      ta.setAttribute('readonly','');
+      ta.style.position='fixed'; ta.style.top='-1000px'; ta.style.opacity='0';
+      document.body.appendChild(ta);
+      ta.select();
+      ta.setSelectionRange(0, text.length);
+      let ok=false;
+      try { ok=document.execCommand('copy'); } catch(e){ ok=false; }
+      ta.remove();
+      return ok;
+    }
+    function selectCode(code, btn){
+      // 复制被浏览器拒绝时的兜底：选中该行提取码文本，让用户直接 Ctrl+C
+      const link=btn.parentElement.querySelector('a');
+      if(!link) return;
+      try{
+        const range=document.createRange();
+        range.selectNodeContents(link);
+        const sel=window.getSelection();
+        sel.removeAllRanges(); sel.addRange(range);
+      }catch(e){}
+    }
+    async function copyCode(code, btn){
+      let ok=false;
+      if(navigator.clipboard && navigator.clipboard.writeText){
+        try { await navigator.clipboard.writeText(code); ok=true; } catch(e){ ok=false; }
+      }
+      if(!ok) ok=legacyCopy(code);
+      if(!ok) selectCode(code, btn);
+      btn.textContent = ok ? '已复制' : '已选中，Ctrl+C';
+      setTimeout(()=>{ btn.textContent='复制'; }, 1600);
     }
     function esc(s){ return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
     async function loadBans(){
@@ -556,7 +669,7 @@
       const d=await r.json().catch(()=>({}));
       if(!r.ok){ alert(d.detail||d.error||'处理失败'); return; }
       alert('已处理：\n'+(d.actions||[]).join('\n'));
-      loadReports(false); loadPackages(); loadBans();
+      loadReports(false); reloadPkg(); loadBans();
     }
     async function dismissReport(id){
       if(!confirm('忽略这条举报？（不做任何处理）')) return;
@@ -662,7 +775,7 @@
       const d=await r.json().catch(()=>({}));
       if(!r.ok){ alert(d.detail||d.error||'封禁失败'); return; }
       alert('已封禁 '+ (d.ip||ip));
-      loadPackages(); loadBans();
+      reloadPkg(); loadBans();
     }
     async function manualBan(){
       const ip=document.getElementById('banIpInput').value.trim();
@@ -673,25 +786,25 @@
       if(!r.ok){ alert(d.detail||d.error||'封禁失败'); return; }
       document.getElementById('banIpInput').value='';
       document.getElementById('banReasonInput').value='';
-      loadPackages(); loadBans();
+      reloadPkg(); loadBans();
     }
     async function unbanIp(ip){
       if(!confirm('确定解封 '+ip+' ？')) return;
       const r=await fetch('/api/banned-ips?ip='+encodeURIComponent(ip),{method:'DELETE'});
       const d=await r.json().catch(()=>({}));
       if(!r.ok){ alert(d.detail||d.error||'解封失败'); return; }
-      loadPackages(); loadBans();
+      reloadPkg(); loadBans();
     }
     async function delPkg(id){
       if(!confirm('确定删除该提取码及文件？')) return;
       await fetch('/api/packages/'+id,{method:'DELETE'});
-      loadPackages();
+      reloadPkg();
     }
     async function cleanup(){
       const r=await fetch('/api/cleanup',{method:'POST'});
       const d=await r.json();
       alert('已清理 '+ (d.cleaned||0) +' 个过期包裹');
-      loadPackages();
+      reloadPkg();
     }
     async function test139(){
       const el=document.getElementById('yTest');
@@ -754,8 +867,10 @@
       }
     }
     document.getElementById('p').addEventListener('keydown', e => { if(e.key==='Enter') login(); });
+    document.getElementById('pkgSearch').addEventListener('keydown', e => { if(e.key==='Enter'){ e.preventDefault(); loadPackages(0); } });
+    document.getElementById('pkgSearch').addEventListener('input', e => { if(!e.target.value.trim()) loadPackages(0); });
     fetch('/api/config').then(r=>{
-      if(r.ok){document.getElementById('loginBox').classList.add('hidden');document.getElementById('dash').classList.remove('hidden');loadCfg();loadPackages();loadBans();loadReports(true);loadBlacklist();loadAiReviews(false);}
+      if(r.ok){document.getElementById('loginBox').classList.add('hidden');document.getElementById('dash').classList.remove('hidden');loadCfg();loadPkgCount();loadBans();loadReports(true);loadBlacklist();loadAiReviews(false);}
     });
   </script>
 </body>
