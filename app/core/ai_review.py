@@ -181,6 +181,14 @@ def _review_image(filename: str, data: bytes, mime: str) -> Dict[str, str]:
         },
     ]
     content = _chat(messages, model=vision, timeout=max(60.0, float(cfg().get("timeout") or 30)))
+    if not (content or "").strip():
+        # 供应商侧内容安全层把输出吞成空串：这是「审核方拒绝处理这张图」，
+        # 与网络故障不同，不能当 skip 放行——否则涉黄图会稳定地绕过审核。
+        logger.warning("ai vision review blocked/empty (%s): provider returned empty content", filename)
+        return {
+            "verdict": "reject",
+            "reason": "模型拒绝处理该图片（返回空内容，疑似违规）",
+        }
     return _parse_verdict(content)
 
 
