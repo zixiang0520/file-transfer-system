@@ -13,7 +13,7 @@ import time
 import hashlib
 from functools import partial
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
@@ -869,6 +869,80 @@ def api_packages(
 def api_delete_package(package_id: int, _: None = Depends(require_admin)):
     purge_package(package_id)
     return {"ok": True}
+
+
+@app.post("/api/packages/batch")
+async def api_batch_packages(request: Request, _: None = Depends(require_admin)):
+    """包裹批量操作：delete=删除包裹（含云盘文件），ban_ip=封禁上传者 IP。
+
+    逐条处理并回传失败明细——批量操作里任何一条出错都不该回滚其它条，
+    也不该让前端以为全成功。
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    action = str(body.get("action") or "").strip()
+    if action not in ("delete", "ban_ip"):
+        raise HTTPException(status_code=400, detail="action 只支持 delete / ban_ip")
+    ids: List[int] = []
+    for raw in (body.get("ids") or []):
+        try:
+            v = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if v > 0 and v not in ids:
+            ids.append(v)
+    if not ids:
+        raise HTTPException(status_code=400, detail="请先选择要操作的包裹")
+    if len(ids) > 500:
+        raise HTTPException(status_code=400, detail="单次最多 500 个包裹")
+    reason = str(body.get("reason") or "").strip()
+    also_del = bool(body.get("delete_package"))
+    who = request.session.get("admin_user") or "admin"
+    done = 0
+    failed: List[Dict[str, Any]] = []
+    ips: List[str] = []
+    for pid in ids:
+        try:
+            pkg = db.get_package(pid)
+            if not pkg:
+                failed.append({"id": pid, "error": "包裹不存在"})
+                continue
+            if action == "ban_ip":
+                try:
+                    ip = _validate_ban_ip(pkg.get("uploader_ip") or "")
+                except HTTPException as e:
+                    failed.append({"id": pid, "error": str(e.detail or "IP 无效")})
+                    continue
+                rec = db.ban_ip(
+                    ip,
+                    reason=reason or f"批量封禁：包裹 {pkg.get('extract_code')}",
+                    created_by=who,
+                )
+                ips.append(rec.get("ip") or ip)
+                if also_del:
+                    purge_package(pid)
+            else:
+                purge_package(pid)
+            done += 1
+        except Exception as e:
+            logger.warning("batch %s failed id=%s: %s", action, pid, e)
+            failed.append({"id": pid, "error": str(e)[:150]})
+    logger.info(
+        "batch %s: 请求 %d 条，成功 %d 条，失败 %d 条，ips=%s",
+        action, len(ids), done, len(failed), sorted(set(ips))[:10],
+    )
+    return {
+        "ok": True,
+        "action": action,
+        "requested": len(ids),
+        "done": done,
+        "failed": failed,
+        "ips": sorted(set(ips)),
+    }
 
 
 @app.post("/api/packages/{package_id}/ban-ip")

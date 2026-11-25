@@ -61,6 +61,19 @@
             <input id="pkgSearch" class="flex-1 min-h-[44px] bg-zinc-800 rounded-xl px-3 py-2.5 text-sm" placeholder="搜索提取码 / 标题 / 上传 IP / 文件名" />
             <button type="button" onclick="loadPackages(0)" class="tap min-h-[44px] px-4 py-2 bg-zinc-800 active:bg-zinc-700 rounded-xl text-sm">搜索</button>
           </div>
+          <div id="pkgBulk" class="hidden mb-3">
+            <div class="flex flex-wrap items-center gap-2 text-xs bg-zinc-800/60 rounded-xl px-3 py-2">
+              <label class="flex items-center gap-1.5 cursor-pointer select-none min-h-[36px]">
+                <input type="checkbox" id="pkgAll" onchange="selectAllPkgs(this.checked)" class="w-4 h-4 accent-violet-500" />
+                全选本页
+              </label>
+              <span id="pkgSelCount" class="text-violet-300">已选 0 项</span>
+              <div class="flex-1"></div>
+              <button type="button" onclick="batchBanIp()" class="tap min-h-[36px] px-3 py-1.5 bg-amber-900/60 active:bg-amber-900/80 rounded-lg">批量封禁 IP</button>
+              <button type="button" onclick="batchDelete()" class="tap min-h-[36px] px-3 py-1.5 bg-red-900/60 active:bg-red-900/80 rounded-lg">批量删除</button>
+              <button type="button" onclick="clearPkgSel()" class="tap min-h-[36px] px-3 py-1.5 bg-zinc-700 active:bg-zinc-600 rounded-lg">取消选择</button>
+            </div>
+          </div>
           <div id="pkgList" class="space-y-3 text-sm"></div>
           <div id="pkgPager" class="hidden flex items-center justify-between gap-2 mt-3 text-xs text-zinc-400"></div>
         </div>
@@ -535,6 +548,68 @@
       }
     }
     let pkgState={offset:0,limit:20,total:0,q:''};
+    // 批量操作选中集合（跨渲染保持，翻页/搜索时清空）
+    const pkgSel=new Set();
+    function syncPkgSel(){
+      document.querySelectorAll('#pkgList .pkg-chk').forEach(cb=>{
+        const id=Number(cb.dataset.id);
+        if(!id) return;
+        if(cb.checked) pkgSel.add(id); else pkgSel.delete(id);
+      });
+      updatePkgBulk();
+    }
+    function updatePkgBulk(){
+      const boxes=[...document.querySelectorAll('#pkgList .pkg-chk')];
+      const bar=document.getElementById('pkgBulk');
+      if(bar) bar.classList.toggle('hidden', !boxes.length);
+      const cnt=document.getElementById('pkgSelCount');
+      if(cnt) cnt.textContent='已选 '+pkgSel.size+' 项';
+      const all=document.getElementById('pkgAll');
+      if(all) all.checked = boxes.length>0 && boxes.every(b=>b.checked);
+    }
+    function selectAllPkgs(on){
+      document.querySelectorAll('#pkgList .pkg-chk').forEach(cb=>{ cb.checked=!!on; });
+      syncPkgSel();
+    }
+    function clearPkgSel(){
+      pkgSel.clear();
+      document.querySelectorAll('#pkgList .pkg-chk').forEach(cb=>{ cb.checked=false; });
+      updatePkgBulk();
+    }
+    async function batchDelete(){
+      const ids=[...pkgSel];
+      if(!ids.length){ alert('请先勾选要删除的包裹'); return; }
+      if(!confirm('确认删除选中的 '+ids.length+' 个包裹？\n会同时删除云盘上的文件，不可恢复。')) return;
+      await runBatch('delete', ids, false);
+    }
+    async function batchBanIp(){
+      const ids=[...pkgSel];
+      if(!ids.length){ alert('请先勾选要封禁的包裹'); return; }
+      if(!confirm('确认封禁选中的 '+ids.length+' 个包裹的上传者 IP？\n被封 IP 将无法再上传。')) return;
+      const alsoDel=confirm('是否同时删除这些包裹？\n确定 = 封禁并删除，取消 = 只封禁 IP 保留包裹');
+      await runBatch('ban_ip', ids, alsoDel);
+    }
+    async function runBatch(action, ids, deletePackage){
+      const btns=[...document.querySelectorAll('#pkgBulk button')];
+      btns.forEach(b=>{ b.disabled=true; });
+      try{
+        const r=await fetch('/api/packages/batch',{
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({action, ids, delete_package:!!deletePackage})
+        });
+        const d=await r.json().catch(()=>({}));
+        if(!r.ok){ alert(d.detail||d.error||'批量操作失败'); return; }
+        let msg=(action==='delete'?'已删除 ':'已封禁 ')+(d.done||0)+' 个包裹';
+        if((d.ips||[]).length) msg+='\n涉及 IP（'+(d.ips||[]).length+' 个）：'+(d.ips||[]).join('、');
+        if((d.failed||[]).length) msg+='\n\n失败 '+(d.failed||[]).length+' 条：\n'+(d.failed||[]).map(f=>'#'+f.id+' '+f.error).join('\n');
+        alert(msg);
+      }finally{
+        btns.forEach(b=>{ b.disabled=false; });
+      }
+      pkgSel.clear();
+      await loadPackages(pkgState.offset);
+      loadBans();
+    }
     function togglePkg(){
       const panel=document.getElementById('pkgPanel');
       const hidden=panel.classList.contains('hidden');
@@ -582,6 +657,7 @@
       const items=data.items||[];
       pkgState.total=Number(data.total||items.length);
       const box=document.getElementById('pkgList'); box.innerHTML='';
+      pkgSel.clear();
       const cnt=document.getElementById('pkgCount');
       if(cnt) cnt.textContent = pkgState.total ? '('+pkgState.total+')' : '(0)';
       items.forEach(p=>{
@@ -596,10 +672,11 @@
         div.innerHTML=`
           <div class="min-w-0">
             <div class="flex items-center gap-2 flex-wrap">
+              <input type="checkbox" class="pkg-chk w-4 h-4 accent-violet-500 shrink-0" data-id="${p.id}" onchange="syncPkgSel()" aria-label="选择包裹 ${esc(p.extract_code)}"${pkgSel.has(Number(p.id))?' checked':''} />
               <a class="tap font-mono text-base sm:text-lg tracking-widest break-all text-violet-300 hover:text-violet-200 underline decoration-dotted underline-offset-4" href="/extract?code=${encodeURIComponent(p.extract_code)}" target="_blank" rel="noopener" title="打开提取页">${esc(p.extract_code)}</a>
               <button type="button" class="tap text-xs text-zinc-400 hover:text-white px-1.5 py-0.5 rounded border border-zinc-700" onclick="copyCode('${esc(p.extract_code)}', this)">复制</button>
             </div>
-            <div class="text-xs text-zinc-400 mt-1 leading-relaxed">${p.file_count||0} 文件 · ${fmtSize(p.total_size)} · 过期 ${fmtTime(p.expire_at)} · 下载 ${p.download_count||0}${p.max_extracts?(' / 限'+p.max_extracts):''}</div>
+            <div class="text-xs text-zinc-400 mt-1 leading-relaxed">上传 ${fmtTime(p.created_at)} · ${p.file_count||0} 文件 · ${fmtSize(p.total_size)} · 过期 ${fmtTime(p.expire_at)} · 下载 ${p.download_count||0}${p.max_extracts?(' / 限'+p.max_extracts):''}</div>
             <div class="text-xs text-zinc-500 mt-1 truncate">文件：${esc(names)}${more}</div>
             <div class="text-xs text-zinc-300 mt-1">上传 IP：${ipHtml}</div>
           </div>
@@ -619,6 +696,7 @@
           ? '<div class="text-zinc-500">没有匹配的包裹</div>'
           : '<div class="text-zinc-500">暂无包裹</div>';
       }
+      updatePkgBulk();
       const pager=document.getElementById('pkgPager');
       const from=pkgState.total?pkgState.offset+1:0;
       const to=Math.min(pkgState.offset+items.length,pkgState.total);
