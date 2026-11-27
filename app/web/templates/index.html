@@ -359,19 +359,38 @@
         .finally(() => { if (timer) clearTimeout(timer); });
     }
 
-    // AI 审核等"不确定时长"阶段的等待 UI：滚动条纹 + 明确文案（否则 0% 不动像卡住）
-    function aiWaitUI(on, name) {
+    // 进度条在"立即上传"按钮下方，移动端很容易落在视口外——
+    // 首次显示时把它滚进视野（block:'nearest' 只在不可见时滚，不打断用户）
+    function revealProgress() {
+      const wrap = document.getElementById('progressWrap');
+      const wasHidden = wrap.classList.contains('hidden');
+      wrap.classList.remove('hidden');
+      if (wasHidden) {
+        try { wrap.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
+        catch (e) { wrap.scrollIntoView(); }
+      }
+      return wrap;
+    }
+
+    // "不确定时长 / 拿不到细分进度"阶段的等待 UI：滚动条纹 + 明确文案
+    // （否则 0% 不动，用户以为卡住）
+    function waitUI(on, text) {
       const bar = document.getElementById('progressBar');
+      revealProgress();
       bar.classList.toggle('progress-indeterminate', !!on);
-      document.getElementById('progressWrap').classList.remove('hidden');
       if (on) {
         bar.style.width = '100%';
         document.getElementById('progressPct').textContent = '…';
-        document.getElementById('progressLabel').textContent =
-          'AI 安全审核中（约 5~15 秒，请勿关闭页面）：' + (name || '');
+        document.getElementById('progressLabel').textContent = text || '处理中…';
         document.getElementById('progressBytes').textContent = '';
         document.getElementById('progressSpeed').textContent = '';
       }
+    }
+
+    // AI 审核专用包装
+    function aiWaitUI(on, name) {
+      if (on) waitUI(true, 'AI 安全审核中（约 5~15 秒，请勿关闭页面）：' + (name || ''));
+      else waitUI(false);
     }
 
     function handleFiles(files) {
@@ -426,8 +445,9 @@
       return Math.floor(m/60)+' 时 '+(m%60)+' 分';
     }
     function setProgress(pct, label, loaded, total, speed){
-      const wrap=document.getElementById('progressWrap');
-      wrap.classList.remove('hidden');
+      revealProgress();
+      // 恢复到真实百分比前必须摘掉滚动条纹，否则条纹盖住宽度变化看着像卡住
+      document.getElementById('progressBar').classList.remove('progress-indeterminate');
       pct=Math.max(0, Math.min(100, pct||0));
       document.getElementById('progressBar').style.width=pct.toFixed(1)+'%';
       document.getElementById('progressPct').textContent=pct.toFixed(1)+'%';
@@ -473,7 +493,12 @@
         }
         let uploaded = 0;
         for (const fm of (init2.files || [])) {
-          if (fm.exist || fm.rapid) { uploaded += (fm.size || 0); continue; } // 秒传命中
+          if (fm.exist || fm.rapid) { // 秒传命中
+            uploaded += (fm.size || 0);
+            setProgress(totalSize ? (uploaded / totalSize * 100) : 0,
+              (fm.rapid ? '急速上传' : '秒传') + '：' + fm.name, uploaded, totalSize, '');
+            continue;
+          }
           const file = selectedFiles.find(x => x.name === fm.name && x.size === fm.size);
           if (!file) throw new Error('找不到本地文件：' + fm.name);
           for (const p of (fm.parts || [])) {
@@ -542,7 +567,12 @@
         xhr.open('POST', '/api/upload');
         xhr.timeout = 0;
         const started = Date.now();
+        // 先点亮进度条。小文件或内网高速时 upload.onprogress 可能一次都不触发，
+        // 那样用户全程看不到任何反馈（2026-11-26 实测复现）
+        setProgress(0, '正在上传到服务器…', 0, totalSize || 0, '');
+        let sawProgress = false;
         xhr.upload.onprogress = (e) => {
+          sawProgress = true;
           if (!e.lengthComputable) return;
           const pct = e.total ? (e.loaded / e.total * 100) : 0;
           const dt = Math.max(0.1, (Date.now() - started) / 1000);
@@ -551,7 +581,12 @@
           setProgress(pct, '上传到服务器（WebDAV 中转）…', e.loaded, e.total,
             fmtBytes(speed) + '/s' + (remain > 0 && pct < 99.5 ? ' · 剩余 ' + fmtEta(remain) : ''));
         };
+        // 600ms 仍无进度事件 → 浏览器不给细分进度，改滚动条纹明确"正在传"
+        const stallTimer = setTimeout(() => {
+          if (!sawProgress) waitUI(true, '正在上传到服务器（浏览器未提供细分进度）…');
+        }, 600);
         const fail = (msg) => {
+          clearTimeout(stallTimer);
           alert('上传失败：' + msg);
           btn.disabled = false;
           btn.innerHTML = oldHtml;
@@ -559,6 +594,7 @@
           resolve();
         };
         xhr.onload = () => {
+          clearTimeout(stallTimer);
           let data = {};
           try { data = JSON.parse(xhr.responseText || '{}'); } catch (e) {}
           if (xhr.status >= 200 && xhr.status < 300 && !data.error) {
@@ -668,7 +704,12 @@
         // 4) 浏览器直传云盘：逐个分片 PUT 到预签名 URL（顺序发片，139 要求严格按序）
         let uploaded = 0, lastLoaded = 0, lastTs = Date.now();
         for (const fm of initData.files) {
-          if (fm.exist || fm.rapid) { uploaded += fm.size; continue; } // 秒传/急速上传命中，无需上传
+          if (fm.exist || fm.rapid) { // 秒传/急速上传命中，无需上传
+            uploaded += fm.size;
+            setProgress(totalSize ? (uploaded / totalSize * 100) : 0,
+              (fm.rapid ? '急速上传' : '秒传') + '：' + fm.name, uploaded, totalSize, '');
+            continue;
+          }
           const file = selectedFiles.find(x => x.name === fm.name && x.size === fm.size);
           if (!file) throw new Error('找不到本地文件：' + fm.name);
           const parts = fm.parts || [];
