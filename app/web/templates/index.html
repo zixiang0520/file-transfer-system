@@ -554,6 +554,28 @@
       }
     }
 
+    // 分片 PUT 用 XHR 而非 fetch：fetch 没有上传进度事件，10MB 一片只能等整片
+    // 传完才跳一次百分比，慢速网络下看起来就是"卡住不动"（2026-11-26 定位）
+    function putChunk(url, blob, onProgress) {
+      return new Promise((resolve, reject) => {
+        const x = new XMLHttpRequest();
+        x.open('PUT', url, true);
+        x.setRequestHeader('Content-Type', 'application/octet-stream');
+        x.timeout = 0;
+        if (onProgress) {
+          x.upload.onprogress = (e) => {
+            if (e.lengthComputable) onProgress(e.loaded, e.total || blob.size);
+          };
+        }
+        x.onload = () => (x.status >= 200 && x.status < 300)
+          ? resolve()
+          : reject(new Error('HTTP ' + x.status));
+        x.onerror = () => reject(new Error('网络错误'));
+        x.ontimeout = () => reject(new Error('请求超时'));
+        x.send(blob);
+      });
+    }
+
     // WebDAV / 其他非直传后端：multipart 一次性 POST 到服务器，由服务器中转。
     // 用 XHR 而不是 fetch 是为了拿到真实上传进度。
     function uploadViaServer(expireHours, maxExt, totalSize, btn, oldHtml) {
@@ -669,11 +691,17 @@
 
         // 2) 创建上传任务（服务器在云盘建任务，返回预签名分片 URL）
         setProgress(0, '正在创建上传任务…', 0, totalSize, '');
-        const initResp = await fetchJSON('/api/direct-upload/init', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({ title: '', expire_hours: expireHours, max_extracts: maxExt, files: filesMeta })
-        });
+        // 云端建任务偶尔要好几秒，这段没有百分比可显示，1.5 秒后改滚动条纹，
+        // 免得看起来卡在 0%
+        const initStall = setTimeout(() => waitUI(true, '正在云端创建上传任务…'), 1500);
+        let initResp;
+        try {
+          initResp = await fetchJSON('/api/direct-upload/init', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ title: '', expire_hours: expireHours, max_extracts: maxExt, files: filesMeta })
+          });
+        } finally { clearTimeout(initStall); }
         initData = await initResp.json().catch(() => ({}));
         if (!initResp.ok || initData.error) {
           throw new Error(initData.error || ('创建上传任务失败 HTTP ' + initResp.status));
@@ -720,15 +748,18 @@
             const chunkSize = end - start;
             let ok = false, lastErr = null;
             // 同片直传重试（小分片失败多为瞬时抖动；对象存储 PUT 同片幂等可重试）
+            const chunkBlob = file.slice(start, end);
             for (let attempt = 0; attempt < 2 && !ok; attempt++) {
               try {
-                const putResp = await fetch(part.uploadUrl, {
-                  method: 'PUT',
-                  headers: {'Content-Type': 'application/octet-stream'},
-                  body: file.slice(start, end)
+                // 片内真实进度：本片已发字节叠加到已完成总量上，百分比在整片
+                // 传输过程中平滑推进，而不是等整片传完才阶梯跳一次
+                await putChunk(part.uploadUrl, chunkBlob, (loaded) => {
+                  const done = uploaded + Math.min(loaded, chunkSize);
+                  setProgress(totalSize ? (done / totalSize * 100) : 0,
+                    '直传云盘：' + fm.name + '（分片 ' + part.partNumber + '/' + parts.length + '）',
+                    done, totalSize, '');
                 });
-                if (putResp.ok) { ok = true; break; }
-                lastErr = new Error('HTTP ' + putResp.status);
+                ok = true;
               } catch (e) { lastErr = e; }
             }
             // 直传仍失败 → 降级服务器同步中转该片（sync=1 服务器转完才返回，
