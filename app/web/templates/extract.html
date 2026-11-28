@@ -82,6 +82,8 @@
     </div>
   </div>
   <script>
+    // 文件名由匿名上传者完全控制，任何 innerHTML 插值必须过 esc()
+    function esc(s){ return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
     function fmtSize(n) {
       n = Number(n)||0;
       if (n < 1024) return n + ' B';
@@ -156,7 +158,7 @@
           <label class="flex items-center gap-3 min-w-0 flex-1 cursor-pointer">
             <input type="checkbox" class="file-chk w-5 h-5 rounded accent-violet-500 shrink-0" value="${f.id}" onchange="updateSelHint()" />
             <div class="min-w-0">
-              <div class="font-medium text-sm sm:text-base break-all sm:truncate">${f.name}</div>
+              <div class="font-medium text-sm sm:text-base break-all sm:truncate">${esc(f.name)}</div>
               <div class="text-xs text-zinc-500">${fmtSize(f.size)}</div>
             </div>
           </label>

@@ -884,7 +884,8 @@
       let expireLabel = '';
       if (hours >= 24 && hours % 24 === 0) expireLabel = `${hours / 24} 天后`;
       else if (hours >= 24) {
-        const d = Math.floor(hours / 24), h = Math.round(hours % 24);
+        let d = Math.floor(hours / 24), h = Math.round(hours % 24);
+        if (h >= 24) { d += 1; h = 0; } // 71.9999 这类值 round 后 h=24，进位到天
         expireLabel = h ? `${d} 天 ${h} 小时后` : `${d} 天后`;
       } else expireLabel = `${Math.round(hours)} 小时后`;
       const expAt = data.expire_at ? new Date(data.expire_at * 1000).toLocaleString() : '';
