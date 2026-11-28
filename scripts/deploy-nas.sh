@@ -187,16 +187,46 @@ ok "镜像已导入并打上 latest"
 # ---------- 4. 用新镜像重建容器 ----------
 # 关键：不带 --build。镜像已在本地导入，compose 只做容器重建，不会触发 NAS 端构建。
 log "重建容器（compose up -d，无 --build）"
+# 旧容器若不是 compose 创建的（缺 com.docker.compose.project 标签），compose up
+# 会直接报 "container name is already in use" 并退出码 1。镜像已在上一步导入，
+# 先删掉这个游离容器，交给 compose 按 compose 文件重建。
+existing_kind=$(nas docker container inspect "$PROJECT_NAME" 2>/dev/null | python3 -c '
+import sys, json
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print("absent"); raise SystemExit
+c = d[0] if isinstance(d, list) else d
+labels = (c.get("Config") or {}).get("Labels") or {}
+print("compose" if labels.get("com.docker.compose.project") else "foreign")
+' 2>/dev/null || echo "absent")
+if [[ "$existing_kind" == "foreign" ]]; then
+  log "旧容器 $PROJECT_NAME 不是 compose 管理的，先删除再交给 compose 重建"
+  run_once "${PROJECT_NAME}-cleanup" container rm --force "$PROJECT_NAME" \
+    || die "删除旧容器 $PROJECT_NAME 失败"
+fi
 run_once "${PROJECT_NAME}-deployer" \
   compose --project-directory "$NAS_APP_DIR" \
   -f "$NAS_APP_DIR/docker-compose.yml" up -d
 
 # ---------- 5. 健康校验 ----------
 log "等待服务健康检查通过"
+# 以容器自身的 docker healthcheck（镜像里定义，探测 127.0.0.1:8790）为准。
+# 不要用 curl http://$NAS_HOST:8790：那条路落在 fts-tls 上，即使后端 502
+# 它也会返回 301/502 页面，curl -f 对非 5xx 的 301 会误判为健康。
 healthy=0
 for _ in $(seq 1 40); do
   sleep 3
-  if curl -fsS --max-time 5 "$HEALTH_URL" >/dev/null 2>&1; then
+  st=$(nas docker container inspect "$PROJECT_NAME" 2>/dev/null | python3 -c '
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    c = d[0] if isinstance(d, list) else d
+    print(((c.get("State") or {}).get("Health") or {}).get("Status") or "none")
+except Exception:
+    print("none")
+' 2>/dev/null || echo none)
+  if [[ "$st" == "healthy" ]]; then
     healthy=1
     break
   fi

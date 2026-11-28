@@ -6,8 +6,11 @@ services:
     image: file-transfer-system:latest
     container_name: file-transfer-system
     restart: unless-stopped
-    ports:
-      - "${FTS_PORT:-8790}:8790"
+    # 不对外发布端口：宿主机 8790 已被 fts-tls（TLS 反代）占用，访问链路是
+    # nginx → 容器IP:8790（容器网络内部直连），应用容器无需朝外开门。
+    # 若在这里声明 ports，compose up 会报 "port is already allocated" 直接失败。
+    # ports:
+    #   - "${FTS_PORT:-8790}:8790"
     environment:
       FTS_HOST: "0.0.0.0"
       FTS_PORT: "8790"
