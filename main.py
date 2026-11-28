@@ -544,6 +544,29 @@ async def api_direct_upload_init(request: Request):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+def _attach_package_fields(result: dict, pkg: dict, base: str) -> dict:
+    """给 complete 类端点补齐前端 showResult 需要的字段。
+
+    complete_direct_upload 只回 package_id/files/file_count/total_size，前端
+    showResult 里 Number(data.expire_hours) || 0 就显示"0 小时后过期"（用户报障）。
+    这里按库里的 created_at/expire_at 反推 expire_hours（packages 表没这列），
+    与 /api/upload 返回同一套字段，三个上传入口的结果面板才一致。
+    """
+    code = (pkg or {}).get("extract_code") or ""
+    result["extract_code"] = code
+    result["extract_url"] = (
+        f"{base.rstrip('/')}/extract?code={code}" if base else f"/extract?code={code}"
+    )
+    if pkg:
+        created = float(pkg.get("created_at") or 0)
+        expire = float(pkg.get("expire_at") or 0)
+        result["expire_at"] = expire
+        result["expire_hours"] = round((expire - created) / 3600, 4) if created else 0
+        result["max_extracts"] = int(pkg.get("max_extracts") or 0)
+        result.setdefault("file_count", len(result.get("files") or []))
+    return result
+
+
 @app.post("/api/direct-upload/complete")
 async def api_direct_upload_complete(request: Request):
     try:
@@ -559,14 +582,9 @@ async def api_direct_upload_complete(request: Request):
             files=body.get("files") or [],
         )
         pkg = db.get_package(package_id)
-        code = (pkg or {}).get("extract_code") or ""
         cfg = load_config()
         base = (cfg.get("site") or {}).get("public_base_url") or ""
-        result["extract_code"] = code
-        result["extract_url"] = (
-            f"{base.rstrip('/')}/extract?code={code}" if base else f"/extract?code={code}"
-        )
-        return result
+        return _attach_package_fields(result, pkg, base)
     except TransferError as e:
         return JSONResponse({"error": e.message}, status_code=e.code)
     except Exception as e:
@@ -695,14 +713,9 @@ async def api_pipeline_upload_complete(request: Request):
                 _pipeline_state.pop(fid, None)
         result = complete_direct_upload(package_id=package_id, files=files)
         pkg = db.get_package(package_id)
-        code = (pkg or {}).get("extract_code") or ""
         cfg = load_config()
         base = (cfg.get("site") or {}).get("public_base_url") or ""
-        result["extract_code"] = code
-        result["extract_url"] = (
-            f"{base.rstrip('/')}/extract?code={code}" if base else f"/extract?code={code}"
-        )
-        return result
+        return _attach_package_fields(result, pkg, base)
     except TransferError as e:
         return JSONResponse({"error": e.message}, status_code=e.code)
     except Exception as e:
