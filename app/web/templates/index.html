@@ -26,8 +26,11 @@
     .file-item { transition: background .15s; }
     .tap { -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
     .safe-pad { padding-left: max(1rem, env(safe-area-inset-left)); padding-right: max(1rem, env(safe-area-inset-right)); }
-    /* AI 审核等"不确定时长"阶段的滚动条纹动画 */
-    .progress-indeterminate {
+    /* AI 审核等"不确定时长"阶段的滚动条纹动画。
+       必须用 ID 选择器：进度条自身带 bg-gradient-to-r 类，而 tailwind.js 运行时
+       把生成的样式插在页面 <style> 之后，同为单类选择器时会把条纹的
+       background-image 覆盖回渐变，条纹就"只滚一下然后看着是静止色块"。 */
+    #progressBar.progress-indeterminate {
       background-image: linear-gradient(45deg, rgba(255,255,255,.28) 25%, transparent 25%, transparent 50%, rgba(255,255,255,.28) 50%, rgba(255,255,255,.28) 75%, transparent 75%, transparent);
       background-size: 1.1rem 1.1rem;
       animation: progress-stripes .7s linear infinite;
@@ -564,7 +567,10 @@
         x.timeout = 0;
         if (onProgress) {
           x.upload.onprogress = (e) => {
-            if (e.lengthComputable) onProgress(e.loaded, e.total || blob.size);
+            // 不要因为 lengthComputable=false 就丢弃事件：跨域 PUT 到对象存储时
+            // 浏览器经常给不出 total，但有 loaded 就足够推进进度了
+            const total = e.lengthComputable ? e.total : blob.size;
+            onProgress(e.loaded != null ? e.loaded : 0, total);
           };
         }
         x.onload = () => (x.status >= 200 && x.status < 300)
@@ -749,19 +755,27 @@
             let ok = false, lastErr = null;
             // 同片直传重试（小分片失败多为瞬时抖动；对象存储 PUT 同片幂等可重试）
             const chunkBlob = file.slice(start, end);
+            const chunkLabel = '直传云盘：' + fm.name + '（分片 ' + part.partNumber + '/' + parts.length + '）';
+            // 跨域 PUT 到对象存储时浏览器常常一个片内进度事件都不给，那样整片
+            // 传输期间会停在上一片的百分比上纹丝不动。700ms 还没动静就切滚动条纹。
+            let gotChunkProgress = false;
+            const chunkStall = setTimeout(() => {
+              if (!gotChunkProgress) waitUI(true, chunkLabel);
+            }, 700);
             for (let attempt = 0; attempt < 2 && !ok; attempt++) {
               try {
                 // 片内真实进度：本片已发字节叠加到已完成总量上，百分比在整片
                 // 传输过程中平滑推进，而不是等整片传完才阶梯跳一次
                 await putChunk(part.uploadUrl, chunkBlob, (loaded) => {
+                  gotChunkProgress = true;
                   const done = uploaded + Math.min(loaded, chunkSize);
                   setProgress(totalSize ? (done / totalSize * 100) : 0,
-                    '直传云盘：' + fm.name + '（分片 ' + part.partNumber + '/' + parts.length + '）',
-                    done, totalSize, '');
+                    chunkLabel, done, totalSize, '');
                 });
                 ok = true;
               } catch (e) { lastErr = e; }
             }
+            clearTimeout(chunkStall);
             // 直传仍失败 → 降级服务器同步中转该片（sync=1 服务器转完才返回，
             // 之后浏览器再传下一片，保住 139 分片严格按序）
             if (!ok) {
@@ -875,7 +889,7 @@
       } else expireLabel = `${Math.round(hours)} 小时后`;
       const expAt = data.expire_at ? new Date(data.expire_at * 1000).toLocaleString() : '';
       document.getElementById('expireTime').innerHTML =
-        `<span class="text-violet-400">${expireLabel}</span> 过期` +
+        `<span class="text-violet-400">${expireLabel}</span>过期` +
         (expAt ? `<div class="text-xs text-zinc-500 mt-1">${expAt}</div>` : '');
       document.getElementById('fileCount').textContent = `${data.file_count} 个文件`;
       const maxE = Number(data.max_extracts) || 0;
